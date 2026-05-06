@@ -2,15 +2,15 @@
 
 # <img src="res/logo.png" alt="n8n-as-code" width="40" height="40"> n8n-as-code
 
-### The AI Skill that gives your coding agent n8n superpowers.
+### The n8n IDE for AI agents.
 
-**GitOps · AI Skills · TypeScript Workflows · VS Code · Claude Code · OpenClaw**
+**VS Code / Cursor Agent · n8n-manager · GitOps · AI Skills · TypeScript Workflows**
 
 [![CI](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/ci.yml/badge.svg)](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/ci.yml)
 [![Documentation](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/docs.yml/badge.svg)](https://n8nascode.dev/)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/etienne-lescot.n8n-as-code?label=VS%20Code&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code)
 [![Open VSX](https://img.shields.io/open-vsx/v/etienne-lescot/n8n-as-code?label=Open%20VSX&logo=eclipseide)](https://open-vsx.org/extension/etienne-lescot/n8n-as-code)
-[![npm: cli](https://img.shields.io/npm/v/@n8n-as-code/cli?label=cli&logo=npm)](https://www.npmjs.com/package/@n8n-as-code/cli)
+[![npm: cli](https://img.shields.io/npm/v/n8nac?label=cli&logo=npm)](https://www.npmjs.com/package/n8nac)
 [![npm: skills](https://img.shields.io/npm/v/@n8n-as-code/skills?label=skills&logo=npm)](https://www.npmjs.com/package/@n8n-as-code/skills)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Beta%20%2F%20Pending%20Review-orange)](https://n8nascode.dev/docs/usage/claude-plugin/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -21,13 +21,12 @@
 
 <br>
 
-**Your AI agent doesn't just _read_ about n8n. It _knows_ n8n.**<br>
-An installable ontology for n8n — every node, every property, every option, and the relationships between them — embedded at install time.<br>
-Zero external calls. Zero latency. Zero hallucination.
+**Build, edit, deploy, and debug n8n workflows from your editor with an agent that has live n8n context.**<br>
+V2 ships an integrated VS Code/Cursor Agent, real instance management through `n8n-manager`, and the same grounded n8n knowledge across CLI, MCP, Claude Code, and OpenClaw.
 
 <br>
 
-[**📖 Documentation**](https://n8nascode.dev/) · [**🚀 Getting Started**](https://n8nascode.dev/docs/getting-started/) · [**🧠 AI Skills**](https://n8nascode.dev/docs/usage/skills/)
+[**Documentation**](https://n8nascode.dev/) · [**Getting Started**](https://n8nascode.dev/docs/getting-started/) · [**VS Code Guide**](https://n8nascode.dev/docs/usage/vscode-extension/)
 
 </div>
 
@@ -39,81 +38,85 @@ Zero external calls. Zero latency. Zero hallucination.
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
-Choose the entry point that matches how you already work.
+Start with the VS Code/Cursor extension if you want the full V2 experience: an n8n sidebar, live workflow context, a built-in agent, and runtime operations powered by `n8n-manager`.
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 💻 VS Code / Cursor
-Visual workflow view inside the editor.
+### VS Code / Cursor Agent
 
-**Best for:** VS Code, Cursor, Windsurf, Antigravity
+**Best for:** agent-led workflow creation, editing, testing, and review inside the editor.
 
-**Setup**  
-Install from the VS Code Marketplace or Open VSX.  
-Open the `n8n` view.  
-Open `n8n: Configure`, enter the URL and API key of your existing n8n instance, load the project, then save and activate the config.
+1. Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) or [Open VSX](https://open-vsx.org/extension/etienne-lescot/n8n-as-code).
+2. Open a folder or `.code-workspace`.
+3. Open the `n8n` view and run `n8n: Configure`.
+4. Create a managed local n8n instance or connect an existing n8n instance through `n8n-manager`.
+5. Select a project, save the workspace context, then ask the Agent to build, update, test, or debug a workflow.
 
-[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) · [Open VSX](https://open-vsx.org/extension/etienne-lescot/n8n-as-code)
+[VS Code guide](https://n8nascode.dev/docs/usage/vscode-extension/)
 
 </td>
 <td width="50%" valign="top">
 
-### ✴️ Claude Code
+### CLI / Automation
 
-Plugin-driven workflow work with Claude.
+**Best for:** terminal-first sync, scripts, CI, and direct workflow operations.
 
-**Best for:** agent-led editing with marketplace install
+```bash
+n8n-manager auth set --url <url> --api-key-stdin
+n8n-manager projects select <project-id-or-name>
+npx --yes n8nac workspace set-sync-folder workflows
+npx --yes n8nac update-ai
+```
 
-**Run**  
-<code>/plugin marketplace add <wbr>https:&#47;&#47;github.com&#47;EtienneLescot&#47;n8n-as-code</code><br>
-<code>/plugin install <wbr>n8n-as-code@n8nac-marketplace</code><br>
-.
-
-[Claude setup docs](https://n8nascode.dev/docs/usage/claude-plugin/)
+[CLI guide](https://n8nascode.dev/docs/usage/cli/) · [n8n-manager guide](https://n8nascode.dev/docs/usage/n8n-manager/)
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 🦞 OpenClaw
+### Claude Code
 
-OpenClaw plugin with the same portable n8n skills and workspace bootstrap flow.
+**Best for:** natural-language workflow work in Claude Code using the same n8n skills and manager-backed runtime.
 
-**Best for:** OpenClaw users who want standard skills, grounding, and setup
+```text
+/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code
+/plugin install n8n-as-code@n8nac-marketplace
+```
 
-**Run**  
-<code>openclaw plugins install <wbr>@n8n-as-code/n8nac</code><br>
-<code>openclaw n8nac:setup</code><br>
-<code>openclaw gateway restart</code>
-
-[OpenClaw setup docs](https://n8nascode.dev/docs/usage/openclaw/)
+[Claude setup docs](https://n8nascode.dev/docs/usage/claude-plugin/)
 
 </td>
 <td width="50%" valign="top">
 
-<h3><img src="res/yagr-logo.png" alt="Yagr" height="20" style="vertical-align:middle"> Yagr</h3>
+### OpenClaw
 
-Guided onboarding, persistent runtime, cleanest path into n8n-as-code.
+**Best for:** OpenClaw users who want portable n8n skills, setup, and runtime actions.
 
-**Best for:** fastest setup, agent-first workflow, shared runtime across tools
+```bash
+openclaw plugins install @n8n-as-code/n8nac
+openclaw n8nac:setup
+openclaw gateway restart
+```
 
-**Run**  
-<code>npm install -g @yagr/agent@latest</code><br>
-<code>yagr onboard</code>
-
-[Yagr docs](https://yagr.dev) · [Yagr repository](https://github.com/EtienneLescot/yagr)
+[OpenClaw setup docs](https://n8nascode.dev/docs/usage/openclaw/)
 
 </td>
 </tr>
 </table>
 
-> **Then simply tell your agent what you want to do with your n8n workflows.**
-> Build new flows, update existing ones, search nodes and templates, validate changes, pull from n8n, push updates, and keep everything in sync.
+> Then tell your agent what you want to do with n8n.
+> It can use the current workflow, selected node, n8n instance, and workspace context to create flows, edit nodes, search docs and templates, push changes, provision missing credentials, run supported workflows, and inspect executions.
+
+### What changed in V2
+
+- **Integrated VS Code/Cursor Agent** — the extension now includes an Agent Workbench that understands the selected workflow, selected node, active instance, project, and local workspace.
+- **`n8n-manager` runtime foundation** — instance registration, API keys, managed local runtimes, project selection, credential readiness, deployment, execution, and inspection use the same runtime layer across surfaces.
+- **One grounded workflow loop** — local files, n8n schema knowledge, docs, templates, validation, push/pull, credential setup, activation, test execution, and execution inspection are available from the same product flow.
 
 ### Prereleases
 
@@ -131,59 +134,6 @@ openclaw plugins install @n8n-as-code/n8nac@next
 ```
 
 Do not mix the `next` Claude/OpenClaw plugin payload with `n8nac@latest`: prerelease skills may rely on commands that are not available in the stable CLI yet.
-
-### New: Agents can now complete the runtime loop
-
-`n8n-as-code` now removes a major source of friction in AI-assisted workflow development.
-
-An agent can now:
-
-- detect which credentials a workflow is missing after a push
-- ask the user only for the secret values it cannot infer
-- provision those credentials without bouncing back to the n8n UI
-- activate the workflow once provisioning is complete
-- execute webhook, chat, and form workflows on the user's behalf
-- inspect the resulting execution directly from n8n when the run fails on the server side
-
-From a user point of view, this is a major step forward: the agent is no longer limited to editing workflow code. It can now help drive the workflow all the way to a real execution, then debug what happened using the execution data returned by n8n.
-
-Detailed commands live in the [CLI guide](https://n8nascode.dev/docs/usage/cli/).
-
-### Architecture direction: two engines, one product experience
-
-`n8n-as-code` is both the user-facing product experience and the home of the workflow intelligence engine.
-
-The architecture is intentionally split:
-
-- `workflow-core` remains independent and owns workflow representation, generation, validation, schemas, templates, and node knowledge.
-- `n8n-manager` remains independent and owns n8n setup, diagnostics, credentials readiness, starter kits, deployment, execution, and inspection.
-- Facades such as `n8nac`, the VS Code/Cursor extension, MCP, Claude Code, OpenClaw, and YAGR integrations may orchestrate both.
-
-The core workflow packages do not depend on `n8n-manager`. The facades may use `n8n-manager` to provide a complete runtime-ready experience.
-
-All facades should converge on the same setup choice:
-
-```txt
-How do you want to use n8n?
-
-[Recommended] Create and manage a local n8n automatically
-[Connect an existing n8n]
-[Use generation-only mode]
-```
-
-After that, the same facade can offer starter credentials, workflow generation, deployment, execution, and inspection.
-
-### ⌨️ CLI
-
-Explicit terminal-first workflow for sync and automation.
-
-**Best for:** scripts, CI, GitOps pipelines, direct workflow operations
-
-**Run**  
-<code>n8n-manager auth set --url &lt;url&gt; --api-key-stdin</code><br>
-<code>npx --yes n8nac workspace set-sync-folder workflows</code>
-
-[Full Getting Started Guide](https://n8nascode.dev/docs/getting-started/)
 
 ---
 ## MCP Clients (Claude Desktop) :
@@ -212,22 +162,22 @@ npx --yes n8nac update-ai
 
 ---
 
-## 🧠 AI Skills — What Your Agent Gets
+## AI Skills: What Your Agent Gets
 
 > **Not a bridge. Not a proxy. A Skill.**<br>
 > Pre-built knowledge that your AI agent carries with it — works in **Cursor, Cline, Windsurf, Copilot, Claude**, or any coding agent.
 
-In 2026 AI tooling language, this layer is increasingly described as an **ontology**: a structured domain map that tells an agent what exists, how it fits together, and which actions are valid. That is exactly what `n8n-as-code` ships for n8n.
+The skills layer gives agents a grounded n8n map: what nodes exist, which parameters they accept, how workflows connect, which examples are relevant, and which operations are safe before pushing to a real instance.
 
 | | |
 |:---|:---|
-| 🧩 **537 n8n nodes** | 433 core + 104 AI/LangChain — every official node, nothing missing |
-| 📋 **100% schema coverage** | 10,209 properties + 17,155 option values — the ontology stays grounded in the real schema |
-| 📚 **1,243 documentation pages** | 93% of nodes have linked docs — integrations, triggers, AI, hosting, code |
-| 🔄 **7,702 workflow templates** | Full community library — searchable in ~5ms with FlexSearch |
-| 🤖 **104 AI/LangChain nodes** | Agents, chains, LLMs, tools, memory, vector stores, retrievers |
-| 💡 **170 pages with code examples** | Ready-to-use snippets extracted from official n8n docs |
-| ✅ **Built-in validation** | Schema validation catches errors _before_ you push to production |
+| **537 n8n nodes** | 433 core + 104 AI/LangChain nodes |
+| **100% schema coverage** | 10,209 properties + 17,155 option values grounded in the real schema |
+| **1,243 documentation pages** | 93% of nodes have linked docs for integrations, triggers, AI, hosting, and code |
+| **7,702 workflow templates** | Searchable community library with on-demand workflow downloads |
+| **104 AI/LangChain nodes** | Agents, chains, LLMs, tools, memory, vector stores, and retrievers |
+| **170 pages with code examples** | Ready-to-use snippets extracted from official n8n docs |
+| **Built-in validation** | Schema validation catches errors before you push to production |
 
 ```bash
 # Your agent can search nodes, docs, and templates instantly
@@ -237,7 +187,7 @@ npx --yes n8nac skills examples search "AI agent"  # Search 7,702 templates
 npx --yes n8nac skills validate workflow.json   # Validate before deploying
 ```
 
-Claude Code uses the same `n8n-manager` and `n8nac` CLIs and ships the `n8n-manager` and `n8n-architect` skills through the `n8n-as-code` plugin, so natural-language workflow work and terminal automation stay aligned around the same backend and n8n ontology.
+Claude Code uses the same `n8n-manager` and `n8nac` CLIs and ships the `n8n-manager` and `n8n-architect` skills through the `n8n-as-code` plugin, so natural-language workflow work and terminal automation stay aligned around the same runtime and n8n knowledge.
 
 ### Community Workflow Sources
 
@@ -326,75 +276,51 @@ n8nac pull <id> > workflow.json && n8nac convert workflow.json --format typescri
 
 ---
 
-## 🎨 VS Code / Cursor Extension
+## VS Code / Cursor Extension
 
-> **Visual editing without leaving your IDE.** A dedicated sidebar, embedded n8n canvas, and one-click sync.
+> **The fastest V2 path:** editor sidebar, live n8n context, integrated Agent Workbench, embedded canvas, and one-click sync.
 
-1. Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) or [OpenVSX Marketplace](https://open-vsx.org/extension/etienne-lescot/n8n-as-code)
-2. Click the **n8n** icon in the Activity Bar
-3. Open **n8n: Configure**, add or select a global n8n-manager instance, choose the workspace project/sync folder, then **Save workspace context**
+1. Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) or [OpenVSX Marketplace](https://open-vsx.org/extension/etienne-lescot/n8n-as-code).
+2. Open a folder or `.code-workspace`, then click the **n8n** icon in the Activity Bar.
+3. Run **n8n: Configure** to create a managed local n8n instance or connect an existing instance through `n8n-manager`.
+4. Save the workspace context, pull or create workflows, then use the built-in Agent to work with the selected workflow and node.
 
-You can keep multiple global n8n-manager instances and explicitly pin a workspace to one when needed.
-
-> ℹ️ **Workspace required**: Open a folder or a `.code-workspace` before running **Initialize n8n as code**.  
-> The extension needs an active workspace to index files and settings.
+You can keep multiple global `n8n-manager` instances and pin a workspace to a specific instance/project when needed.
 
 **What you get:**
-- 📂 **Workflow sidebar** — browse all local & remote workflows with sync status
-- 🖼️ **Embedded n8n canvas** — visual split-view editing
-- ☁️ **One-click push/pull** — sync workflows without touching the terminal
-- ⚡ **Push-on-save** — auto-deploy when you save
-- 🔀 **Conflict resolution UI** — visual merge conflicts
+
+- **Agent Workbench** — ask for workflow changes with live workflow, selected node, instance, and workspace context.
+- **Workflow sidebar** — browse local and remote workflows with explicit sync status.
+- **Embedded n8n canvas** — inspect the visual workflow next to the source file.
+- **One-click push/pull** — sync workflows without leaving the editor.
+- **Runtime loop** — provision missing credentials, activate, run supported workflows, and inspect executions through `n8n-manager`.
+- **Conflict resolution UI** — resolve real local/remote divergence intentionally.
 
 ---
 
-## 📦 Packages
+## Packages
 
 | Package | What it does | Install |
 |:--------|:-------------|:--------|
-| **[@n8n-as-code/workflow-core](packages/workflow-core)** | Workflow contracts, setup-mode contracts, and workflow authoring API | workspace package |
-| **[@n8n-as-code/manager-adapter](packages/manager-adapter)** | Optional bridge from facades to `n8n-manager` runtime and credentials packages | workspace package |
-| **[n8nac](packages/cli)** | CLI facade — workflow intelligence plus optional runtime setup, credentials, deploy, run | `npx n8nac` |
-| **[VS Code Extension](packages/vscode-extension)** | Visual facade — sidebar, canvas, setup choices, credentials, push-on-save | [Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) |
-| **[@n8n-as-code/n8nac](plugins/openclaw/n8n-as-code)** | OpenClaw facade — setup wizard, prompt context, portable skills | `openclaw plugins install @n8n-as-code/n8nac` |
-| **[@n8n-as-code/skills](packages/skills)** | AI Skills — portable n8n-manager/n8n-architect guidance plus knowledge base, search, schemas | `npm i @n8n-as-code/skills` |
-| **[@n8n-as-code/transformer](packages/transformer)** | JSON ↔ TypeScript converter | `npm i @n8n-as-code/transformer` |
+| **[VS Code Extension](packages/vscode-extension)** | Editor experience with sidebar, canvas, integrated Agent Workbench, and manager-backed runtime actions | [Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) |
+| **[n8nac](packages/cli)** | CLI for sync, validation, AI context, and runtime operations through `n8n-manager` | `npx n8nac` |
+| **[@n8n-as-code/skills](packages/skills)** | Portable AI skills and embedded n8n knowledge for agents | `npm i @n8n-as-code/skills` |
+| **[@n8n-as-code/n8nac](plugins/openclaw/n8n-as-code)** | OpenClaw plugin with setup, prompt context, and portable skills | `openclaw plugins install @n8n-as-code/n8nac` |
+| **[@n8n-as-code/transformer](packages/transformer)** | JSON to TypeScript workflow converter and back | `npm i @n8n-as-code/transformer` |
+| **[@n8n-as-code/workflow-core](packages/workflow-core)** | Internal workflow contracts, validation, and authoring primitives | workspace package |
+| **[@n8n-as-code/manager-adapter](packages/manager-adapter)** | Internal bridge from product surfaces to `n8n-manager` runtime capabilities | workspace package |
 
 ---
 
-## 🏗 Architecture
+## How The Pieces Fit
 
-```
-+------------------------------------------------------------------+
-|                         User Interfaces                          |
-|                                                                  |
-|  [CLI]        [VS Code]        [Claude Code]      [OpenClaw]     |
-|  sync/search  canvas/sidebar   plugin workflow    plugin workflow |
-+-------------------+----------------------+-----------------------+
-                    |                      |
-                    v                      v
-+-------------------+----------------------+-----------------------+
-|                      Product Facades / Apps                     |
-|                                                                  |
-|  [n8nac] [VS Code/Cursor] [MCP] [Claude/OpenClaw] [YAGR]        |
-+-------------------------------+----------------------------------+
-                    |                              |
-                    v                              v
-+------------------------------------------------------------------+
-|                    Independent Workflow Engine                   |
-|                                                                  |
-|  workflow-core / schemas / templates / transformer / validation  |
-+------------------------------------------------------------------+
-                    |
-                    v
-+------------------------------------------------------------------+
-|                    Independent Runtime Engine                    |
-|                                                                  |
-|  n8n-manager / credentials / starter kits / deploy / run         |
-+------------------------------------------------------------------+
-```
+The user-facing surfaces all share the same core behavior:
 
-Facades import both engines when they need the full product loop. The workflow engine and runtime engine remain independent from each other.
+- **VS Code/Cursor extension** for the full editor and Agent Workbench experience.
+- **`n8nac` CLI** for terminal and automation workflows.
+- **MCP, Claude Code, and OpenClaw integrations** for external agent environments.
+- **`n8n-manager`** for real n8n environments: instances, API keys, projects, local runtimes, credentials, activation, execution, and inspection.
+- **Embedded n8n knowledge** for schema validation, node lookup, docs, templates, and AI guidance.
 
 ---
 

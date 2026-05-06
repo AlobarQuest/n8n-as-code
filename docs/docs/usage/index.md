@@ -1,74 +1,69 @@
 ---
 sidebar_position: 1
 title: Usage
-description: Guides for using n8n-as-code with VS Code, Claude, OpenClaw, and the CLI.
+description: Guides for using n8n-as-code V2 with the VS Code/Cursor Agent, n8n-manager, CLI, Claude, and OpenClaw.
 ---
 
 # Usage
 
-n8n-as-code gives you several ways to work with your n8n workflows locally. Pick the one that fits your workflow best.
+n8n-as-code V2 gives you multiple surfaces for the same workflow loop: grounded n8n knowledge, explicit local sync, real runtime context through `n8n-manager`, and AI agents that can work from your current workflow.
 
-## VS Code Extension
+## VS Code / Cursor Extension
 
-The most complete experience. Install the extension in VS Code or Cursor, connect to your n8n instance, and manage everything from the sidebar.
+The recommended experience. Install the extension, configure `n8n-manager`, and use the integrated Agent Workbench with live editor context.
 
-- Tree view with sync status for every workflow
-- Right-click to pull, push, or resolve conflicts
-- Split view: code editor + n8n canvas side by side
-- JSON validation and code snippets
+- Agent Workbench with current workflow, selected node, instance, project, and workspace context.
+- n8n sidebar with local and remote workflow status.
+- Split view with source file and n8n canvas side by side.
+- Explicit pull, push, fetch, and conflict resolution controls.
+- Runtime actions for credentials, activation, supported executions, and inspection through `n8n-manager`.
 
-[**VS Code Extension Guide →**](/docs/usage/vscode-extension)
+[**VS Code Extension Guide**](/docs/usage/vscode-extension)
 
-## Claude Plugin
+## n8n-manager
 
-Let Claude create, edit, and fix workflows for you. Install the plugin in Claude Code or set up the MCP server for Claude Desktop — then just describe what you want.
+The runtime foundation used by V2 surfaces. It owns n8n instances, API keys, managed local runtimes, tunnels, project selection, credential readiness, deployment, execution, and inspection.
 
-- Natural language workflow creation and editing
-- Automatic node lookup from 500+ schemas
-- Handles init, pull, push behind the scenes
+Use this guide when you need to understand where instances are stored, how projects are selected, how credentials are prepared, or how runtime execution works.
 
-[**Claude Plugin Guide →**](/docs/usage/claude-plugin)
-
-## OpenClaw Plugin
-
-Same AI-powered workflow experience inside OpenClaw. Install the plugin, run the setup wizard, and ask for workflow changes in plain language.
-
-[**OpenClaw Plugin Guide →**](/docs/usage/openclaw)
+[**n8n-manager Guide**](/docs/usage/n8n-manager)
 
 ## CLI
 
-The command-line interface for terminal users, scripts, and CI/CD pipelines. All sync operations available as explicit commands.
+The terminal interface for direct workflow operations, scripts, and CI.
 
 - explicit Git-like sync between local files and n8n
-- runtime provisioning for missing credentials
-- workflow activation and HTTP test planning
-- webhook, chat, and form execution from the CLI
-- direct execution inspection for post-run debugging
-- Workflow format conversion (JSON ↔ TypeScript)
+- workflow validation and format conversion
 - AI context generation for local agents
+- manager-backed credential provisioning, activation, execution, and inspection
 
-[**CLI Guide →**](/docs/usage/cli)
+[**CLI Guide**](/docs/usage/cli)
+
+## Claude Plugin
+
+Use the same n8n skills in Claude Code or connect Claude Desktop through MCP. This is useful when you want Claude to create, edit, or debug workflows while staying grounded in bundled n8n schemas and docs.
+
+[**Claude Plugin Guide**](/docs/usage/claude-plugin)
+
+## OpenClaw Plugin
+
+Install the OpenClaw plugin for portable n8n skills, workspace setup, and natural-language workflow changes inside OpenClaw.
+
+[**OpenClaw Plugin Guide**](/docs/usage/openclaw)
 
 ## TypeScript Workflows
 
-An optional decorator-based format that makes workflows more readable and AI-friendly. Works alongside the standard JSON format — convert back and forth at any time.
+An optional decorator-based format that makes workflow files easier to read, diff, and edit with agents. It works alongside standard n8n JSON workflows and can be converted in either direction.
 
-[**TypeScript Workflows Guide →**](/docs/usage/typescript-workflows)
-
-## n8n-manager: The Runtime Engine
-
-All facades delegate runtime management to `n8n-manager`, an independent engine that owns n8n instances, authentication, managed Docker runtime, tunnels, credentials infrastructure, and workflow presentation.
-
-Whether you use the CLI, VS Code extension, MCP server, or Claude/OpenClaw plugins — they all use `n8n-manager` under the hood for instance and credential operations.
-
-[**n8n-manager Guide →**](/docs/usage/n8n-manager)
+[**TypeScript Workflows Guide**](/docs/usage/typescript-workflows)
 
 ## Typical Tasks
 
 | Need | Best entry point |
 |---|---|
-| Browse, pull, push, and resolve workflow changes visually | [VS Code Extension](/docs/usage/vscode-extension) |
-| Ask an agent to build or fix workflows in natural language | [Claude Plugin](/docs/usage/claude-plugin) or [OpenClaw Plugin](/docs/usage/openclaw) |
-| Let an agent provision credentials, activate a workflow, run it, and inspect failures | [OpenClaw Plugin](/docs/usage/openclaw), [Claude Plugin](/docs/usage/claude-plugin), and the generated `AGENTS.md` |
-| Script sync, testing, or CI/CD flows directly | [CLI Guide](/docs/usage/cli) |
-| Work in a more AI-friendly source format | [TypeScript Workflows](/docs/usage/typescript-workflows) |
+| Build or edit workflows with live editor context | [VS Code Extension](/docs/usage/vscode-extension) |
+| Manage instances, API keys, projects, credentials, and executions | [n8n-manager](/docs/usage/n8n-manager) |
+| Script sync, validation, conversion, or CI/CD flows | [CLI Guide](/docs/usage/cli) |
+| Ask Claude to create, update, or debug workflows | [Claude Plugin](/docs/usage/claude-plugin) |
+| Use n8n skills inside OpenClaw | [OpenClaw Plugin](/docs/usage/openclaw) |
+| Work in a more AI-readable source format | [TypeScript Workflows](/docs/usage/typescript-workflows) |
