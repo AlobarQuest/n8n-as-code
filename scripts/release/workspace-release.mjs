@@ -334,6 +334,14 @@ function buildNextVscodeStableVersion(version, bump) {
     };
   }
 
+  if (bump === 'patch') {
+    return {
+      major: version.major,
+      minor: version.minor,
+      patch: version.patch + 1,
+    };
+  }
+
   return {
     major: version.major,
     minor: getNextEvenMinor(version.minor),
@@ -787,7 +795,7 @@ function computeStablePlan() {
     if (versionAheadOfTag && !reasons.includes('version-ahead-of-tag')) {
       reasons.push('version-ahead-of-tag');
     }
-    if (pkg.publishTarget === 'vscode' && changed && !versionAheadOfTag && !reasons.includes('stable-vscode-even-minor-line')) {
+    if (pkg.publishTarget === 'vscode' && changed && bumpInfo.bump !== 'patch' && !versionAheadOfTag && !reasons.includes('stable-vscode-even-minor-line')) {
       reasons.push('stable-vscode-even-minor-line');
     }
 
