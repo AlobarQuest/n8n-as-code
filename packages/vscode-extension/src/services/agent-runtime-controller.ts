@@ -351,6 +351,69 @@ function importRuntimeModule<T = any>(specifier: string): Promise<T> {
     return import(specifier) as Promise<T>;
 }
 
+function sanitizeShellTranscript(text: string | undefined): string | undefined {
+    if (!text) {
+        return undefined;
+    }
+    const sanitized = text
+        .split('\n')
+        .map((line) => line.replace(/^\[(stdout|stderr)\]\s*/i, '').trimEnd())
+        .join('\n')
+        .trim();
+    return sanitized || undefined;
+}
+
+function lastMeaningfulShellLine(text: string | undefined): string | undefined {
+    return String(text || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .reverse()
+        .find(Boolean);
+}
+
+function truncateShellSummary(text: string, max: number = 120): string {
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function normalizeShellOperationDisplay(summary: string | undefined, body: string | undefined, status: 'running' | 'done' | 'error'):
+    { summary?: string; body?: string } {
+    const cleanBody = sanitizeShellTranscript(body);
+    const rawSummary = String(summary || '').trim();
+    const cleanSummary = sanitizeShellTranscript(rawSummary);
+    const exitMatch = rawSummary.match(/^exit\s+(\d+)\b/i) || rawSummary.match(/exit code:?\s*(\d+)/i);
+    const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : undefined;
+    const lastLine = lastMeaningfulShellLine(cleanBody);
+
+    const summaryLooksTechnical = /^exit\s+\d+\b/i.test(rawSummary)
+        || /^\[(stdout|stderr)\]/i.test(rawSummary)
+        || /^exit code:?\s*\d+$/i.test(rawSummary);
+
+    if (exitCode !== undefined && summaryLooksTechnical) {
+        if (exitCode === 0) {
+            if (!lastLine || lastLine === '}' || lastLine === ']' || /^exit code:?\s*0$/i.test(lastLine)) {
+                return { summary: 'Completed', body: cleanBody };
+            }
+            return { summary: truncateShellSummary(lastLine), body: cleanBody };
+        }
+
+        if (!lastLine || /^exit code:?\s*\d+$/i.test(lastLine)) {
+            return { summary: `Command failed (exit ${exitCode})`, body: cleanBody };
+        }
+
+        if (new RegExp(`\\b${exitCode}\\b`).test(lastLine)) {
+            return { summary: truncateShellSummary(lastLine), body: cleanBody };
+        }
+
+        return { summary: truncateShellSummary(`${lastLine} (exit ${exitCode})`), body: cleanBody };
+    }
+
+    return {
+        summary: cleanSummary,
+        body: cleanBody,
+    };
+}
+
 export class AgentRuntimeController implements vscode.Disposable {
     private activeRun: { abortController: AbortController; sessionId: string } | undefined;
     private cachedAgentHandle: { key: string; handle: any } | undefined;
@@ -1623,6 +1686,9 @@ export class AgentRuntimeController implements vscode.Disposable {
         if (event.type === 'operation') {
             const next = [...entries];
             const existingIndex = this.findMatchingPendingOperationIndex(next, event.operationId, event.label, event.category);
+            const normalizedShell = event.category === 'shell'
+                ? normalizeShellOperationDisplay(event.summary, event.body, event.status)
+                : { summary: event.summary, body: event.body };
             const operationEntry: AgentTimelineEntry = {
                 kind: 'operation',
                 id: event.operationId,
@@ -1630,11 +1696,11 @@ export class AgentRuntimeController implements vscode.Disposable {
                 title: event.label,
                 category: event.category,
                 status: event.status,
-                body: event.body,
-                summary: event.summary,
+                body: normalizedShell.body,
+                summary: normalizedShell.summary,
                 startedAt: event.startedAt,
                 endedAt: event.endedAt,
-                detail: event.summary,
+                detail: normalizedShell.summary,
             };
             if (existingIndex >= 0) {
                 next[existingIndex] = operationEntry;
