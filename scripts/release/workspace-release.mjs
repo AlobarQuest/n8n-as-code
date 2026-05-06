@@ -289,6 +289,27 @@ function writeJson(relativePath, value) {
   fs.writeFileSync(absolutePath, `${JSON.stringify(value, null, indent)}\n`);
 }
 
+function syncClaudePluginVersion(changedVersions) {
+  const skillsVersion = changedVersions.get('@n8n-as-code/skills');
+  if (!skillsVersion) {
+    return;
+  }
+
+  const pluginManifest = readJson('plugins/claude/n8n-as-code/.claude-plugin/plugin.json');
+  pluginManifest.version = skillsVersion;
+  writeJson('plugins/claude/n8n-as-code/.claude-plugin/plugin.json', pluginManifest);
+
+  const marketplace = readJson('.claude-plugin/marketplace.json');
+  if (marketplace.metadata) {
+    marketplace.metadata.version = skillsVersion;
+  }
+  const pluginEntry = marketplace.plugins?.find(entry => entry.name === pluginManifest.name);
+  if (pluginEntry) {
+    pluginEntry.version = skillsVersion;
+  }
+  writeJson('.claude-plugin/marketplace.json', marketplace);
+}
+
 function getNextEvenMinor(minor) {
   return minor % 2 === 0 ? minor + 2 : minor + 1;
 }
@@ -890,6 +911,8 @@ function applyPlan(plan, versionKey) {
       writeJson(pkg.packageJsonPath, packageJson);
     }
   }
+
+  syncClaudePluginVersion(changedVersions);
 
   const syncResult = syncDependencyManifests({ workspaceRoot, mode: 'write', silent: true });
   if (!syncResult.ok) {
