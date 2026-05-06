@@ -94,7 +94,7 @@ npx --yes n8nac verify <workflow-id>
 
 ### What changed in V2
 
-- **Integrated VS Code/Cursor Agent** — the extension now includes an Agent Workbench that understands the selected workflow, selected node, active instance, project, and local workspace.
+- **Integrated VS Code Agent** — the extension now includes an Agent Workbench that understands the selected workflow, selected node, active instance, project, and local workspace.
 - **`n8n-manager` runtime foundation** — instance registration, API keys, managed local runtimes, project selection, credential readiness, deployment, execution, and inspection use the same runtime layer across surfaces.
 - **One grounded workflow loop** — local files, n8n schema knowledge, docs, templates, validation, push/pull, credential setup, activation, test execution, and execution inspection are available from the same product flow.
 
