@@ -23,6 +23,12 @@ const runtimeDependencyRoots = [
     '@yagr/session-service',
     '@yagr/stream-adapter',
 ];
+const bundledSkillsAssetFiles = new Set([
+    'n8n-docs-complete.json',
+    'n8n-knowledge-index.json',
+    'n8n-nodes-technical.json',
+    'workflows-index.json',
+]);
 
 function packageNameToParts(packageName) {
     return packageName.startsWith('@') ? packageName.split('/') : [packageName];
@@ -168,8 +174,14 @@ const copySkillsAssets = {
                     fs.mkdirSync(targetDir, { recursive: true });
                 }
 
+                for (const file of fs.readdirSync(targetDir)) {
+                    if (file.endsWith('.json') && !bundledSkillsAssetFiles.has(file)) {
+                        fs.rmSync(path.join(targetDir, file), { force: true });
+                    }
+                }
+
                 // Copy JSON files
-                const files = fs.readdirSync(sourceDir).filter(f => f.endsWith('.json'));
+                const files = fs.readdirSync(sourceDir).filter(f => bundledSkillsAssetFiles.has(f));
                 for (const file of files) {
                     const src = path.join(sourceDir, file);
                     const dest = path.join(targetDir, file);
