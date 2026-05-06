@@ -5,7 +5,7 @@ export function normalizeToolOutputForDisplay(output: unknown): string | undefin
     return text?.trim() || undefined;
 }
 
-export function withNormalizedToolEndOutput(event: unknown): { event: unknown; displayText?: string } {
+export function withNormalizedToolEndOutput(event: unknown): { event: unknown; displayText?: string; suppressBody?: boolean } {
     if (!isRecord(event) || event.event !== 'on_tool_end' || !isRecord(event.data)) {
         return { event };
     }
@@ -24,6 +24,7 @@ export function withNormalizedToolEndOutput(event: unknown): { event: unknown; d
             },
         },
         displayText,
+        suppressBody: isLangGraphCommandUpdate(event.data.output),
     };
 }
 
@@ -87,16 +88,32 @@ function extractSerializedDisplayString(value: string, seen: Set<unknown>): stri
 }
 
 function extractLangGraphCommandDisplayText(value: RecordLike): string | undefined {
-    if (value.lg_name !== 'Command' || !isRecord(value.update)) {
+    const update = value.update;
+    if (!isLangGraphCommandUpdate(value) || !isRecord(update)) {
         return undefined;
     }
-    if (Array.isArray(value.update.todos)) {
+    if (Array.isArray(update.todos)) {
         return 'Updated todos';
     }
-    if (Array.isArray(value.update.messages)) {
+    if (Array.isArray(update.messages)) {
         return 'Updated messages';
     }
     return 'Updated state';
+}
+
+function isLangGraphCommandUpdate(value: unknown): boolean {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed.startsWith('{') || !trimmed.includes('"lg_name"')) {
+            return false;
+        }
+        try {
+            return isLangGraphCommandUpdate(JSON.parse(trimmed));
+        } catch {
+            return false;
+        }
+    }
+    return isRecord(value) && value.lg_name === 'Command' && isRecord(value.update);
 }
 
 function extractLangChainToolMessageText(value: RecordLike, seen: Set<unknown>): string | undefined {

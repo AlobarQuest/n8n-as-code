@@ -819,7 +819,9 @@ export class AgentRuntimeController implements vscode.Disposable {
                         await postMessage({ type: 'agent.streamEvent', event: { type: 'text-delta', delta } });
                     },
                     onOperation: async (operation: any) => {
-                        const operationBody = toolEndDisplayText || (typeof operation.body === 'string' ? operation.body : normalizeToolOutputForDisplay(operation.body));
+                        const operationBody = normalizedToolEnd.suppressBody
+                            ? undefined
+                            : toolEndDisplayText || (typeof operation.body === 'string' ? operation.body : normalizeToolOutputForDisplay(operation.body));
                         const operationSummary = typeof operation.summary === 'string' ? operation.summary : normalizeToolOutputForDisplay(operation.summary);
                         const streamEvent: AgentStreamEvent = {
                             type: 'operation',

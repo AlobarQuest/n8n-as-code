@@ -59,7 +59,7 @@ test('Tool output display: unwraps serialized ToolMessage strings only when reco
 });
 
 test('Tool output display: hides LangGraph Command update JSON wrappers', () => {
-    const { normalizeToolOutputForDisplay } = require('../../src/utils/tool-output-display.js');
+    const { normalizeToolOutputForDisplay, withNormalizedToolEndOutput } = require('../../src/utils/tool-output-display.js');
     const commandUpdate = JSON.stringify({
         lg_name: 'Command',
         update: {
@@ -68,4 +68,5 @@ test('Tool output display: hides LangGraph Command update JSON wrappers', () => 
     });
 
     assert.equal(normalizeToolOutputForDisplay(commandUpdate), 'Updated todos');
+    assert.equal(withNormalizedToolEndOutput({ event: 'on_tool_end', data: { output: commandUpdate } }).suppressBody, true);
 });
