@@ -2078,11 +2078,13 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'workflow.update' && typeof message.url === 'string') {
+                const nextWorkflowUrl = message.url;
+                const shouldUpdateFrame = nextWorkflowUrl !== workflowUrl;
                 workflowId = String(message.workflowId || workflowId);
-                workflowUrl = message.url;
+                workflowUrl = nextWorkflowUrl;
                 workflowReloadUrl = typeof message.reloadUrl === 'string' && message.reloadUrl ? message.reloadUrl : workflowUrl;
                 try { iframeOrigin = new URL(workflowUrl).origin; } catch (e) { iframeOrigin = 'src'; }
-                if (frame) frame.src = workflowUrl;
+                if (frame && shouldUpdateFrame) frame.src = workflowUrl;
                 return;
             }
 

@@ -75,6 +75,7 @@ export class SyncCommand extends BaseCommand {
 
             const status = await syncManager.getSingleWorkflowDetailedStatus(workflowId, basename);
             if (status.status === WorkflowSyncStatus.CONFLICT) {
+                await syncManager.recordWorkflowPushRejected(basename, workflowId, 'Conflict detected before push');
                 console.log(chalk.red(`💥 Conflict detected for workflow ${workflowId}.`));
                 console.log(chalk.yellow(`To resolve the conflict you can either:`));
                 console.log(`  n8nac resolve ${workflowId} --mode keep-current`);

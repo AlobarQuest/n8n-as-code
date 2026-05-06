@@ -7,7 +7,7 @@ declare const __N8NAC_VERSION__: string;
 declare const __N8NAC_CLI_SEMVER__: string;
 import {
     SyncManager, CliApi, N8nApiClient, IN8nCredentials, WorkflowSyncStatus, ConfigService,
-    resolveInstanceIdentifier, isCanonicalUserInstanceIdentifier
+    resolveInstanceIdentifier, isCanonicalUserInstanceIdentifier, SYNC_EVENT_JOURNAL_FILENAME, type SyncEvent
 } from 'n8nac';
 import { AiContextGenerator, getN8nacDevConfigFilenames } from '@n8n-as-code/skills';
 
@@ -114,6 +114,52 @@ let workflowsTreeView: vscode.TreeView<any> | undefined;
 let telemetryClient: TelemetryClient | undefined;
 
 const conflictStore = new Map<string, string>();
+const processedSyncEventIds = new Set<string>();
+
+async function processSyncEventJournal(journalUri: vscode.Uri, source: string, markOnly = false): Promise<void> {
+    if (!fs.existsSync(journalUri.fsPath)) return;
+    let raw: Uint8Array;
+    try {
+        raw = await vscode.workspace.fs.readFile(journalUri);
+    } catch (err) {
+        console.error('[n8n] Failed to read sync event journal', err);
+        return;
+    }
+
+    const lines = Buffer.from(raw).toString('utf8').split('\n').filter(Boolean);
+    for (const line of lines) {
+        let event: SyncEvent;
+        try {
+            event = JSON.parse(line) as SyncEvent;
+        } catch {
+            continue;
+        }
+        if (!event.id) continue;
+        if (markOnly) {
+            processedSyncEventIds.add(event.id);
+            continue;
+        }
+        if (processedSyncEventIds.has(event.id)) continue;
+        processedSyncEventIds.add(event.id);
+        trimProcessedSyncEvents();
+
+        if (event.op !== 'workflow.push') continue;
+        if (event.status !== 'success' || !event.remoteChanged || !event.workflowId) {
+            outputChannel.appendLine(`[n8n-agent-debug] ${source} push event status=${event.status} workflowId=${event.workflowId || 'none'} reload=false reason=${event.reason || ''}`);
+            continue;
+        }
+        const reloaded = workflowWebviewRegistry.reloadIfMatching(event.workflowId);
+        outputChannel.appendLine(`[n8n-agent-debug] ${source} push success workflowId=${event.workflowId} filename=${event.filename || 'none'} reloaded=${reloaded}`);
+    }
+}
+
+function trimProcessedSyncEvents(): void {
+    while (processedSyncEventIds.size > 1000) {
+        const first = processedSyncEventIds.values().next().value;
+        if (!first) return;
+        processedSyncEventIds.delete(first);
+    }
+}
 
 type SwitchInstanceCommandArgs = {
     instanceId?: string;
@@ -373,11 +419,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 const workflows = await refreshWorkflowList();
                 const updatedWorkflow = workflows.find(candidate => candidate.filename === wf.filename);
                 const workflowId = updatedWorkflow?.id ?? pushedId ?? wf.id;
-
-                if (workflowId) {
-                    const reloaded = workflowWebviewRegistry.reloadIfMatching(workflowId);
-                    outputChannel.appendLine(`[n8n-agent-debug] command push reload workflowId=${workflowId} filename=${wf.filename} reloaded=${reloaded}`);
-                }
+                await processSyncEventJournal(vscode.Uri.file(await syncManager.getSyncEventJournalPath()), 'command push journal');
 
                 outputChannel.appendLine(`[n8n] Push successful: ${wf.name} (${workflowId ?? 'unknown id'})`);
                 statusBar.showSynced();
@@ -624,7 +666,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 await new Promise(r => setTimeout(r, 500));
                 store.dispatch(setWorkflows(await cli.list()));
                 store.dispatch(removeConflict(id));
-                workflowWebviewRegistry.reloadIfMatching(id);
+                await processSyncEventJournal(vscode.Uri.file(await syncManager.getSyncEventJournalPath()), 'conflict resolution journal');
                 vscode.window.showInformationMessage('✅ Pushed — remote overwritten with your local version.');
                 enhancedTreeProvider.refresh();
             } else if (choice === 'Keep Incoming (remote)') {
@@ -1894,8 +1936,7 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
     // 1. VS Code native FS watcher on *.workflow.ts: detects new/deleted files → refreshes list.
     //    Change events are deliberately ignored — local modifications are detected via hash
     //    comparison in getSingleWorkflowDetailedStatus() only when an operation requires it.
-    // 2. State file watcher on .n8n-state.json: written by CLI after every push/pull/resolve →
-    //    refreshes list and reloads the open webview (handles agent-driven CLI operations).
+    // 2. Sync event journal watcher: written by CLI after successful remote mutations.
     // 3. Remote polling every 60s: discovers workflows created/deleted on the n8n instance.
     if (vscode.workspace.workspaceFolders?.length) {
         const pattern = new vscode.RelativePattern(
@@ -1915,47 +1956,6 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
         fileWatcher.onDidCreate(reloadList);
         fileWatcher.onDidDelete(reloadList);
         runtimeDisposables.push(fileWatcher);
-    }
-
-    // 3. State file watcher: .n8n-state.json is written by the CLI after every push/pull/resolve.
-    //    Watching it lets the UI react to CLI operations (agent-driven workflow).
-    //    IMPORTANT: cli.list() here has NO fetchRemote option → purely local (readdirSync +
-    //    in-memory remoteIds populated at init). No network call on every state change.
-    //    The webview is only reloaded when the workflow it is currently displaying is the one
-    //    whose lastSyncedAt changed — unrelated operations do not trigger a reload.
-    if (vscode.workspace.workspaceFolders?.length) {
-        const statePattern = new vscode.RelativePattern(
-            vscode.workspace.workspaceFolders[0],
-            `${folder}/**/.n8n-state.json`
-        );
-        // ignoreCreate=true, ignoreChange=false, ignoreDelete=true — only react to writes
-        const stateWatcher = vscode.workspace.createFileSystemWatcher(statePattern, true, false, true);
-        // Snapshot of workflowId → lastSyncedAt: used to detect which workflow was actually touched.
-        const stateSnapshot = new Map<string, string>();
-        stateWatcher.onDidChange(async (changedUri) => {
-            if (!cli) return;
-            try {
-                outputChannel.appendLine(`[n8n-agent-debug] stateWatcher change path=${changedUri.fsPath}`);
-                store.dispatch(setWorkflows(await cli.list()));
-                enhancedTreeProvider.refresh();
-                // Only reload the webview if the currently displayed workflow was affected.
-                // Read the state file to find which workflow IDs changed since last write.
-                const raw = await vscode.workspace.fs.readFile(changedUri);
-                const state = JSON.parse(Buffer.from(raw).toString('utf8')) as {
-                    workflows: Record<string, { lastSyncedAt?: string }>;
-                };
-                for (const [id, entry] of Object.entries(state.workflows ?? {})) {
-                    if (entry.lastSyncedAt && entry.lastSyncedAt !== stateSnapshot.get(id)) {
-                        stateSnapshot.set(id, entry.lastSyncedAt);
-                        const reloaded = workflowWebviewRegistry.reloadIfMatching(id);
-                        outputChannel.appendLine(`[n8n-agent-debug] stateWatcher changed workflowId=${id} lastSyncedAt=${entry.lastSyncedAt} reloaded=${reloaded}`);
-                    }
-                }
-            } catch (err) {
-                console.error('[n8n] State watcher: failed to refresh after CLI operation', err);
-            }
-        });
-        runtimeDisposables.push(stateWatcher);
     }
 
     // Remote polling — lightweight `list` every 60 seconds to surface new/deleted remote workflows.
@@ -1982,6 +1982,41 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
         resetExtensionRuntimeState();
         outputChannel.appendLine(`[n8n] Failed to load workflows: ${error.message}`);
         throw error;
+    }
+
+    // 2. Sync event journal watcher: JSONL is the SSOT for push outcomes.
+    //    Register after the initial list so SyncManager internals are initialized.
+    //    The webview reloads only for new workflow.push success events with remoteChanged=true.
+    if (vscode.workspace.workspaceFolders?.length && syncManager) {
+        const journalPattern = new vscode.RelativePattern(
+            vscode.workspace.workspaceFolders[0],
+            `${folder}/**/${SYNC_EVENT_JOURNAL_FILENAME}`
+        );
+        const journalUri = vscode.Uri.file(await syncManager.getSyncEventJournalPath());
+        await processSyncEventJournal(journalUri, 'sync journal seed', true);
+
+        const journalWatcher = vscode.workspace.createFileSystemWatcher(journalPattern, false, false, true);
+        const handleJournalWrite = async (changedUri: vscode.Uri) => {
+            if (!cli) return;
+            try {
+                outputChannel.appendLine(`[n8n-agent-debug] syncEventJournal change path=${changedUri.fsPath}`);
+                store.dispatch(setWorkflows(await cli.list()));
+                enhancedTreeProvider.refresh();
+                await processSyncEventJournal(changedUri, 'syncEventWatcher');
+            } catch (err) {
+                console.error('[n8n] Sync event watcher: failed to refresh after CLI operation', err);
+            }
+        };
+        journalWatcher.onDidCreate(handleJournalWrite);
+        journalWatcher.onDidChange(handleJournalWrite);
+        runtimeDisposables.push(journalWatcher);
+
+        const journalPollingInterval = setInterval(() => {
+            void processSyncEventJournal(journalUri, 'syncEventPoll').catch((err) => {
+                console.error('[n8n] Sync event poll: failed to process journal', err);
+            });
+        }, 2_000);
+        runtimeDisposables.push({ dispose: () => clearInterval(journalPollingInterval) });
     }
 
     await updateAiContextAfterSyncInitialization(context, client, workspaceRoot, health.version);

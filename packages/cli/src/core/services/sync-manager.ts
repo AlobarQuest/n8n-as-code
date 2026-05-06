@@ -5,6 +5,7 @@ import { N8nApiClient } from './n8n-api-client.js';
 import { StateManager } from './state-manager.js';
 import { WorkflowStateTracker } from './workflow-state-tracker.js';
 import { SyncEngine } from './sync-engine.js';
+import { SyncEventJournal } from './sync-event-journal.js';
 import { ResolutionManager } from './resolution-manager.js';
 import { ISyncConfig, IWorkflow, WorkflowSyncStatus, IWorkflowStatus } from '../types.js';
 import { createProjectSlug } from './directory-utils.js';
@@ -16,6 +17,7 @@ export class SyncManager extends EventEmitter {
     private stateManager: StateManager | null = null;
     private watcher: WorkflowStateTracker | null = null;
     private syncEngine: SyncEngine | null = null;
+    private syncEventJournal: SyncEventJournal | null = null;
     private resolutionManager: ResolutionManager | null = null;
 
     constructor(client: N8nApiClient, config: ISyncConfig) {
@@ -59,7 +61,8 @@ export class SyncManager extends EventEmitter {
             projectId: this.config.projectId
         });
 
-        this.syncEngine = new SyncEngine(this.client, this.watcher, instanceDir, this.config.projectId);
+        this.syncEventJournal = new SyncEventJournal(instanceDir);
+        this.syncEngine = new SyncEngine(this.client, this.watcher, instanceDir, this.config.projectId, this.syncEventJournal);
         this.resolutionManager = new ResolutionManager(this.syncEngine, this.watcher, this.client);
 
         this.watcher.on('statusChange', (data) => {
@@ -190,6 +193,11 @@ export class SyncManager extends EventEmitter {
         return this.watcher.getDirectory();
     }
 
+    public async getSyncEventJournalPath(): Promise<string> {
+        await this.ensureInitialized();
+        return this.syncEventJournal!.getFilePath();
+    }
+
     public getFilenameForId(id: string): string | undefined {
         if (!this.watcher) return undefined;
         return this.watcher.getFilenameForId(id);
@@ -267,42 +275,85 @@ export class SyncManager extends EventEmitter {
     public async push(filename: string): Promise<string> {
         await this.ensureInitialized();
 
-        const target = this.resolvePushTarget(filename);
-        const targetFilename = target.filename;
-        const filePath = target.filePath;
+        let targetFilename: string | undefined;
+        let effectiveId: string | undefined;
 
-        if (!fs.existsSync(filePath)) {
-            throw new Error(
-                `Cannot push workflow "${targetFilename}": local file not found in the active sync scope. ` +
-                `Run 'n8nac list' to verify the workflow exists locally.`
-            );
+        try {
+            const target = this.resolvePushTarget(filename);
+            targetFilename = target.filename;
+            const filePath = target.filePath;
+
+            if (!fs.existsSync(filePath)) {
+                throw new Error(
+                    `Cannot push workflow "${targetFilename}": local file not found in the active sync scope. ` +
+                    `Run 'n8nac list' to verify the workflow exists locally.`
+                );
+            }
+
+            // Rebuild file<->id mappings from the current local files before resolving
+            // the workflow ID so first-run pushes and post-rename pushes do not create
+            // duplicate remote workflows from stale watcher state.
+            await this.watcher!.refreshLocalState();
+
+            effectiveId = this.watcher!.getWorkflowIdForFilename(targetFilename);
+
+            if (!effectiveId) {
+                // Case 1: brand-new workflow (no ID mapping yet) — let SyncEngine create it
+                return await this.syncEngine!.push(targetFilename, undefined, undefined);
+            }
+
+            // Case 2 & 3: workflow has an ID locally
+            // Ensure we know if it exists on remote (git-like sync starts with empty cache)
+            if (!this.watcher!.isRemoteKnown(effectiveId)) {
+                await this.fetch(effectiveId);
+            }
+
+            if (!this.watcher!.isRemoteKnown(effectiveId)) {
+                // Truly doesn't exist on remote → create
+                return await this.syncEngine!.push(targetFilename, effectiveId, WorkflowSyncStatus.EXIST_ONLY_LOCALLY);
+            }
+
+            // Known on both sides → update (with OCC check)
+            return await this.syncEngine!.push(targetFilename, effectiveId, WorkflowSyncStatus.TRACKED);
+        } catch (error: any) {
+            this.recordWorkflowPushFailure(targetFilename || path.basename(filename), effectiveId, error);
+            throw error;
         }
+    }
 
-        // Rebuild file<->id mappings from the current local files before resolving
-        // the workflow ID so first-run pushes and post-rename pushes do not create
-        // duplicate remote workflows from stale watcher state.
-        await this.watcher!.refreshLocalState();
-
-        const effectiveId = this.watcher!.getWorkflowIdForFilename(targetFilename);
-
-        if (!effectiveId) {
-            // Case 1: brand-new workflow (no ID mapping yet) — let SyncEngine create it
-            return await this.syncEngine!.push(targetFilename, undefined, undefined);
+    public async recordWorkflowPushRejected(filename: string, workflowId: string | undefined, reason: string): Promise<void> {
+        await this.ensureInitialized();
+        try {
+            this.syncEventJournal?.append({
+                op: 'workflow.push',
+                status: 'rejected',
+                workflowId,
+                filename,
+                remoteChanged: false,
+                reason,
+            });
+        } catch (error: any) {
+            console.warn(`[SyncManager] Failed to write sync event journal: ${error?.message || error}`);
         }
+    }
 
-        // Case 2 & 3: workflow has an ID locally
-        // Ensure we know if it exists on remote (git-like sync starts with empty cache)
-        if (!this.watcher!.isRemoteKnown(effectiveId)) {
-            await this.fetch(effectiveId);
+    private recordWorkflowPushFailure(filename: string, workflowId: string | undefined, error: any): void {
+        const message = error?.message || String(error);
+        const status = message.includes('Push rejected') || message.includes('Conflict detected') || message.includes('archived on n8n')
+            ? 'rejected'
+            : 'failed';
+        try {
+            this.syncEventJournal?.append({
+                op: 'workflow.push',
+                status,
+                workflowId,
+                filename,
+                remoteChanged: false,
+                reason: message,
+            });
+        } catch (journalError: any) {
+            console.warn(`[SyncManager] Failed to write sync event journal: ${journalError?.message || journalError}`);
         }
-
-        if (!this.watcher!.isRemoteKnown(effectiveId)) {
-            // Truly doesn't exist on remote → create
-            return await this.syncEngine!.push(targetFilename, effectiveId, WorkflowSyncStatus.EXIST_ONLY_LOCALLY);
-        }
-
-        // Known on both sides → update (with OCC check)
-        return await this.syncEngine!.push(targetFilename, effectiveId, WorkflowSyncStatus.TRACKED);
     }
 
     public resolvePushTarget(filename: string): { filename: string; filePath: string; absolutePath: string; } {
@@ -385,10 +436,17 @@ export class SyncManager extends EventEmitter {
 
     public async resolveConflict(workflowId: string, filename: string, resolution: 'local' | 'remote'): Promise<void> {
         await this.ensureInitialized();
-        if (resolution === 'local') {
-            await this.syncEngine!.forcePush(workflowId, filename);
-        } else {
-            await this.syncEngine!.forcePull(workflowId, filename);
+        try {
+            if (resolution === 'local') {
+                await this.syncEngine!.forcePush(workflowId, filename);
+            } else {
+                await this.syncEngine!.forcePull(workflowId, filename);
+            }
+        } catch (error) {
+            if (resolution === 'local') {
+                this.recordWorkflowPushFailure(filename, workflowId, error);
+            }
+            throw error;
         }
     }
 

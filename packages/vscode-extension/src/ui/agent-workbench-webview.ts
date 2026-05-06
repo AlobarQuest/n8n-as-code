@@ -220,10 +220,6 @@ export class AgentWorkbenchWebview {
                 sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
             }, (event) => this.postAgentRuntimeMessage(event));
             this._outputChannel.appendLine(`[n8n-agent-debug] agent.send completed workflowId=${this._workflow?.id || 'none'} workflowChanged=${String(result.workflowChanged)}`);
-            if (result.workflowChanged && this._workflow?.id) {
-                this._outputChannel.appendLine(`[n8n-agent-debug] posting workflow.reload after local workflowChanged workflowId=${this._workflow.id}`);
-                await this._panel.webview.postMessage({ type: 'workflow.reload' });
-            }
             return;
         }
 

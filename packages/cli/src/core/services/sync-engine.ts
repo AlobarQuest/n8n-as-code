@@ -4,6 +4,7 @@ import { N8nApiClient } from './n8n-api-client.js';
 import { WorkflowTransformerAdapter } from './workflow-transformer-adapter.js';
 import { HashUtils } from './hash-utils.js';
 import { WorkflowStateTracker } from './workflow-state-tracker.js';
+import { SyncEventJournal } from './sync-event-journal.js';
 import { WorkflowSyncStatus, IWorkflow } from '../types.js';
 
 /**
@@ -21,17 +22,20 @@ export class SyncEngine {
     private watcher: WorkflowStateTracker;
     private directory: string;
     private projectId: string;
+    private syncEventJournal: SyncEventJournal | undefined;
 
     constructor(
         client: N8nApiClient,
         watcher: WorkflowStateTracker,
         directory: string,
-        projectId: string
+        projectId: string,
+        syncEventJournal?: SyncEventJournal,
     ) {
         this.client = client;
         this.watcher = watcher;
         this.directory = directory;
         this.projectId = projectId;
+        this.syncEventJournal = syncEventJournal;
     }
 
     /**
@@ -77,6 +81,7 @@ export class SyncEngine {
                     
                     // Update lastSyncedHash via finalizeSync
                     await this.watcher.finalizeSync(workflowId, updateUpdatedAt);
+                    this.recordPushSuccess(workflowId, filename, updateUpdatedAt);
                     return workflowId;
                 } catch (error: any) {
                     // If it's a 404 or we truly think it's local-only, fall through to create
@@ -93,6 +98,7 @@ export class SyncEngine {
             
             // Initialize lastSyncedHash via finalizeSync
             await this.watcher.finalizeSync(newWorkflowId, updatedAt);
+            this.recordPushSuccess(newWorkflowId, filename, updatedAt);
             return newWorkflowId;
     }
 
@@ -133,6 +139,7 @@ export class SyncEngine {
         }
 
         await this.watcher.finalizeSync(finalWorkflowId, finalUpdatedAt);
+        this.recordPushSuccess(finalWorkflowId, filename, finalUpdatedAt);
         return finalWorkflowId;
     }
 
@@ -207,8 +214,8 @@ export class SyncEngine {
 
         const updatedWf = await this.client.updateWorkflow(workflowId, localWf);
 
-        if (!updatedWf) {
-            throw new Error('Failed to update remote workflow');
+        if (!updatedWf?.id || updatedWf.id !== workflowId || !Array.isArray(updatedWf.nodes)) {
+            throw new Error('Failed to update remote workflow: n8n did not return an updated workflow payload');
         }
 
         // Block push for archived workflows - n8n API returns 400 and this would cause
@@ -235,6 +242,21 @@ export class SyncEngine {
         this.watcher.setRemoteHash(workflowId, hash);
         
         return updatedWf.updatedAt;
+    }
+
+    private recordPushSuccess(workflowId: string, filename: string, remoteUpdatedAt?: string): void {
+        try {
+            this.syncEventJournal?.append({
+                op: 'workflow.push',
+                status: 'success',
+                workflowId,
+                filename,
+                remoteChanged: true,
+                remoteUpdatedAt,
+            });
+        } catch (error: any) {
+            console.warn(`[SyncEngine] Failed to write sync event journal: ${error?.message || error}`);
+        }
     }
 
     private async executeCreate(filename: string): Promise<{ id: string, updatedAt?: string }> {
