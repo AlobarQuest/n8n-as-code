@@ -50,6 +50,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const compactIcon = lucideIcon('<path d="M6 12h12"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/>');
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
+    const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
+    const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
+    const shellOpIcon = lucideIcon('<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>');
+    const webOpIcon = lucideIcon('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18"/><path d="M12 3a15 15 0 0 0 0 18"/>');
+    const toolOpIcon = lucideIcon('<path d="M14.7 6.3a4 4 0 0 0-5.66 5.66L4 17v3h3l5.04-5.04A4 4 0 0 0 17.7 9.3l-2 2-3-3 2-2Z"/>');
+    const agentOpIcon = lucideIcon('<path d="M12 3 4 7v5c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V7l-8-4Z"/><path d="M9.5 12.5 11 14l3.5-3.5"/>');
+    const phaseOpIcon = lucideIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>');
+    const thinkingOpIcon = lucideIcon('<path d="M9.5 9a3 3 0 1 1 5 2.2c-.8.7-1.5 1.2-1.5 2.3"/><path d="M12 17h.01"/><path d="M7 4.8A9 9 0 1 0 17 4.8"/>');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -469,6 +477,23 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             gap: 8px;
             align-items: center;
             font-weight: 650;
+        }
+        .entry-kind-icon {
+            display: inline-grid;
+            place-items: center;
+            width: 18px;
+            height: 18px;
+            color: var(--muted);
+            flex: 0 0 auto;
+        }
+        .entry-kind-icon svg {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 1.9;
+            stroke-linecap: round;
+            stroke-linejoin: round;
         }
         .entry-subtle {
             color: var(--muted);
@@ -1001,14 +1026,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         let autoScrollFeed = true;
 
         const OP_ICONS = {
-            'file-read': 'Read',
-            'file-write': 'Write',
-            shell: 'Shell',
-            web: 'Web',
-            tool: 'Tool',
-            agent: 'Agent',
-            phase: 'Phase',
-            thinking: 'Thinking'
+            'file-read': ${JSON.stringify(readOpIcon)},
+            'file-write': ${JSON.stringify(writeOpIcon)},
+            shell: ${JSON.stringify(shellOpIcon)},
+            web: ${JSON.stringify(webOpIcon)},
+            tool: ${JSON.stringify(toolOpIcon)},
+            agent: ${JSON.stringify(agentOpIcon)},
+            phase: ${JSON.stringify(phaseOpIcon)},
+            thinking: ${JSON.stringify(thinkingOpIcon)}
         };
 
         const feed = document.getElementById('feed');
@@ -1618,10 +1643,13 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (entry.kind === 'operation') {
                 const el = document.createElement('div');
                 el.className = 'entry operation';
-                const icon = OP_ICONS[entry.category || 'tool'] || 'Tool';
+                const icon = OP_ICONS[entry.category || 'tool'] || OP_ICONS.tool;
                 const statusClass = entry.status ? ' ' + entry.status : '';
+                const title = entry.title || 'Operation';
                 el.innerHTML = '<div class="entry-head">' +
-                    '<div class="entry-title"><span>' + escapeHtml(icon) + '</span><span>' + escapeHtml(entry.title || 'Operation') + '</span></div>' +
+                    '<div class="entry-title">' +
+                    '<span class="entry-kind-icon" aria-hidden="true">' + icon + '</span>' +
+                    '<span>' + escapeHtml(title) + '</span></div>' +
                     '<div class="entry-status' + escapeHtml(statusClass) + '">' + escapeHtml(entry.status || entry.tone || '') + '</div>' +
                     '</div>' +
                     (entry.detail ? '<div>' + escapeHtml(entry.detail) + '</div>' : '');
