@@ -101,6 +101,16 @@ jobs:
         if: steps.pending.outputs.pending == 'true'
         run: npm run build
 
+      - name: Verify release build is reproducible
+        if: steps.pending.outputs.pending == 'true'
+        run: |
+          if ! git diff --quiet --exit-code; then
+            echo '❌ Release build modified tracked files. Regenerate the release PR before publishing.'
+            git status --short
+            git diff --stat
+            exit 1
+          fi
+
       - name: Publish npm packages
         if: steps.pending.outputs.pending == 'true'
         run: |
@@ -418,6 +428,24 @@ jobs:
         with:
           version: 10
 
+      - name: Resolve n8n stable tag
+        id: n8n-tag
+        run: echo "tag=$(node scripts/ensure-n8n-cache.cjs --print-tag)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache n8n repository
+        uses: actions/cache@v4
+        with:
+          path: .n8n-cache
+          key: ${{ runner.os }}-n8n-cache-${{ steps.n8n-tag.outputs.tag }}-${{ hashFiles('scripts/ensure-n8n-cache.cjs') }}
+          restore-keys: |
+            ${{ runner.os }}-n8n-cache-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate tracked release assets
+        run: npm run build --workspace=packages/skills
+
       - name: Refresh tags after stable publish
         run: git fetch origin --tags --force
 
@@ -464,6 +492,7 @@ jobs:
           base: main
           add-paths: |
             package-lock.json
+            .claude-plugin/marketplace.json
             packages/cli/CHANGELOG.md
             packages/cli/package.json
             packages/manager-adapter/CHANGELOG.md
@@ -472,6 +501,7 @@ jobs:
             packages/mcp/package.json
             packages/skills/CHANGELOG.md
             packages/skills/package.json
+            packages/skills/src/assets/
             packages/telemetry/CHANGELOG.md
             packages/telemetry/package.json
             packages/transformer/CHANGELOG.md
@@ -482,6 +512,7 @@ jobs:
             packages/workflow-core/package.json
             plugins/openclaw/n8n-as-code/CHANGELOG.md
             plugins/openclaw/n8n-as-code/package.json
+            plugins/claude/n8n-as-code/.claude-plugin/plugin.json
 
   publish-prerelease:
     name: Publish Prerelease

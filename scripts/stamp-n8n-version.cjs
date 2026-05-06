@@ -31,22 +31,30 @@ function readCacheMetadata() {
     }
 }
 
+function resolveTagFromEnv() {
+    return process.env.N8N_VERSION || process.env.N8N_STABLE_TAG || null;
+}
+
+function resolveN8nTag() {
+    return resolveTagFromEnv() || readCacheMetadata()?.resolvedTag || null;
+}
+
 function getJsonIndent(content) {
     const match = content.match(/^([ \t]+)"/m);
     return match ? match[1] : '    ';
 }
 
 function main() {
-    const metadata = readCacheMetadata();
-    if (!metadata?.resolvedTag) {
-        console.warn('⚠️  No resolvedTag found in cache metadata — skipping n8nVersion stamp.');
+    const resolvedTag = resolveN8nTag();
+    if (!resolvedTag) {
+        console.warn('⚠️  No n8n tag found in env or cache metadata — skipping n8nVersion stamp.');
         return;
     }
 
     // Extract bare semver from tag formats like "n8n@1.88.0", "v1.88.0", or "1.88.0"
-    const semverMatch = /(\d+\.\d+\.\d+.*)$/.exec(metadata.resolvedTag);
+    const semverMatch = /(\d+\.\d+\.\d+.*)$/.exec(resolvedTag);
     if (!semverMatch) {
-        console.warn(`⚠️  Could not extract semver from resolvedTag "${metadata.resolvedTag}" — skipping n8nVersion stamp.`);
+        console.warn(`⚠️  Could not extract semver from n8n tag "${resolvedTag}" — skipping n8nVersion stamp.`);
         return;
     }
     const n8nVersion = semverMatch[1];

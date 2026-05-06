@@ -103,6 +103,7 @@ const CROSS_PACKAGE_RULES = [
   {
     matches(file) {
       return file === 'scripts/ensure-n8n-cache.cjs'
+        || file === 'scripts/release/workspace-release.mjs'
         || file === 'scripts/stamp-n8n-version.cjs'
         || file === 'scripts/generate-n8n-index.cjs'
         || file === 'scripts/download-complete-docs.cjs'
@@ -123,6 +124,12 @@ const CROSS_PACKAGE_RULES = [
   {
     matches(file) {
       return file.startsWith('docs/docs/usage/claude-skill') || file.startsWith('docs/docs/contribution/claude-skill');
+    },
+    packages: ['@n8n-as-code/skills'],
+  },
+  {
+    matches(file) {
+      return file === '.github/workflows/release.yml';
     },
     packages: ['@n8n-as-code/skills'],
   },
