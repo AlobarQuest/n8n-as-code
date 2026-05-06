@@ -58,6 +58,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const agentOpIcon = lucideIcon('<path d="M12 3 4 7v5c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V7l-8-4Z"/><path d="M9.5 12.5 11 14l3.5-3.5"/>');
     const phaseOpIcon = lucideIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>');
     const thinkingOpIcon = lucideIcon('<path d="M9.5 9a3 3 0 1 1 5 2.2c-.8.7-1.5 1.2-1.5 2.3"/><path d="M12 17h.01"/><path d="M7 4.8A9 9 0 1 0 17 4.8"/>');
+    const statusRunningIcon = lucideIcon('<path d="M21 12a9 9 0 1 1-6.22-8.56"/><path d="M21 3v6h-6"/>');
+    const statusDoneIcon = lucideIcon('<path d="M20 6 9 17l-5-5"/>');
+    const statusErrorIcon = lucideIcon('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -503,6 +506,31 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         .entry-status {
             color: var(--muted);
             font-size: 11px;
+            display: inline-grid;
+            place-items: center;
+            width: 18px;
+            height: 18px;
+            flex: 0 0 auto;
+        }
+        .entry-status svg {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
         }
         .entry-status.running { color: var(--warning); }
         .entry-status.done { color: var(--success); }
@@ -1035,6 +1063,12 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             agent: ${JSON.stringify(agentOpIcon)},
             phase: ${JSON.stringify(phaseOpIcon)},
             thinking: ${JSON.stringify(thinkingOpIcon)}
+        };
+
+        const STATUS_ICONS = {
+            running: ${JSON.stringify(statusRunningIcon)},
+            done: ${JSON.stringify(statusDoneIcon)},
+            error: ${JSON.stringify(statusErrorIcon)}
         };
 
         const feed = document.getElementById('feed');
@@ -1646,12 +1680,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 el.className = 'entry operation';
                 const icon = OP_ICONS[entry.category || 'tool'] || OP_ICONS.tool;
                 const statusClass = entry.status ? ' ' + entry.status : '';
+                const statusLabel = entry.status || entry.tone || '';
+                const statusIcon = STATUS_ICONS[entry.status] || '';
                 const title = entry.title || 'Operation';
                 el.innerHTML = '<div class="entry-head">' +
                     '<div class="entry-title">' +
                     '<span class="entry-kind-icon" aria-hidden="true">' + icon + '</span>' +
                     '<span>' + escapeHtml(title) + '</span></div>' +
-                    '<div class="entry-status' + escapeHtml(statusClass) + '">' + escapeHtml(entry.status || entry.tone || '') + '</div>' +
+                    '<div class="entry-status' + escapeHtml(statusClass) + '" title="' + escapeHtml(statusLabel) + '" aria-label="' + escapeHtml(statusLabel) + '">' + statusIcon + '<span class="sr-only">' + escapeHtml(statusLabel) + '</span></div>' +
                     '</div>' +
                     (entry.detail ? '<div>' + escapeHtml(entry.detail) + '</div>' : '');
                 if (entry.body || entry.summary) {
