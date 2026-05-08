@@ -32,11 +32,11 @@ V2 ships an integrated VS Code/Cursor Agent, real instance management through `n
 
 ---
 
+> **Using V1?** V2 is now the default release line. V1 users can keep using the legacy branch and packages: [V1 branch](https://github.com/EtienneLescot/n8n-as-code/tree/v1) · CLI: `npx --yes n8nac@v1 <command>` · Claude Code: `/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code#v1`. The VS Code/OpenVSX listing now follows V2; see [VS Code / Cursor V1 legacy](#vs-code--cursor-v1-legacy) before installing the editor extension.
+
 > **⚠ n8n version compatibility** — The node schema bundled with n8n-as-code is built against the **latest stable release of n8n**. For best results, keep your n8n instance up to date. Using an outdated instance may cause generated workflows to reference node type-versions not yet supported by your instance, which n8n renders as broken nodes in the canvas.
 
 > **Independent project** — n8n-as-code is an independent community project and is not affiliated with, endorsed by, or sponsored by n8n.
-
-> **Using V1?** V2 is now the default release line. V1 users can keep using the legacy branch and packages: [V1 branch](https://github.com/EtienneLescot/n8n-as-code/tree/v1) · CLI: `npx --yes n8nac@v1 <command>` · Claude Code: `/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code#v1`. The VS Code/OpenVSX listing now follows V2; see [VS Code / Cursor V1 legacy](#vs-code--cursor-v1-legacy) before installing the editor extension.
 
 ---
 
