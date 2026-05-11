@@ -800,12 +800,13 @@ export function getConfigurationHtml(nonce: string): string {
       const selectedHost = normalizeHost(selected.url || '');
       const host = typedHost || selectedHost;
       const typedApiKey = environmentApiKeyMasked ? '' : els.environmentApiKey.value.trim();
+      const storedApiKeyAvailable = environmentApiKeyMasked || selected.apiKeyAvailable;
       const typedHostReplacesStored = Boolean(typedHost && selectedHost && typedHost !== selectedHost);
       const needsApiKey = selected.mode === 'remote' && (
-        selected.source === 'manual' || typedHostReplacesStored || (!selected.apiKeyAvailable && !typedApiKey)
+        selected.source === 'manual' || typedHostReplacesStored || (!storedApiKeyAvailable && !typedApiKey)
       );
-      const canValidate = selected.mode === 'managed' || Boolean(host && (!needsApiKey || typedApiKey));
-      const shouldSendTypedCredentials = selected.source === 'manual' || Boolean(typedHost || typedApiKey);
+      const canValidate = selected.mode === 'managed' || Boolean(host && (!needsApiKey || typedApiKey || storedApiKeyAvailable));
+      const shouldSendTypedCredentials = selected.source === 'manual' || typedHostReplacesStored || Boolean(typedApiKey);
       return { selected, typedHost, selectedHost, host, typedApiKey, needsApiKey, canValidate, shouldSendTypedCredentials };
     }
     function setEnvironmentConnectionState(connected, message, options = {}) {

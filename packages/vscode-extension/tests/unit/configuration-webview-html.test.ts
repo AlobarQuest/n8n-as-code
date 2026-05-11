@@ -14,4 +14,6 @@ test('Configuration webview HTML: embedded script parses', () => {
     assert.ok(script.includes("url: isManagedTarget ? '' : target.kind === 'external-instance'"), 'Managed environment targets must not expose a remote URL candidate');
     assert.ok(script.includes("Stored API key will be reused"), 'Stored external API keys must be represented clearly in the environment form');
     assert.ok(script.includes("apiKey: selected.mode === 'remote' && !environmentApiKeyMasked ? els.environmentApiKey.value : ''"), 'Masked stored API keys must not be submitted as literal password text');
+    assert.ok(script.includes('const storedApiKeyAvailable = environmentApiKeyMasked || selected.apiKeyAvailable'), 'Masked API keys must count as available credentials');
+    assert.ok(script.includes("const shouldSendTypedCredentials = selected.source === 'manual' || typedHostReplacesStored || Boolean(typedApiKey)"), 'Prefilled target URLs must not force manual credential submission');
 });
