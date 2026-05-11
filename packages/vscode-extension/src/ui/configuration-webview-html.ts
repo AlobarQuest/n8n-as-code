@@ -855,7 +855,7 @@ export function getConfigurationHtml(nonce: string): string {
           source: 'target',
           id: target.id,
           mode: isManagedTarget ? 'managed' : 'remote',
-          url: target.kind === 'external-instance' ? target.url : linkedInstance?.baseUrl || linkedInstance?.host || '',
+          url: isManagedTarget ? '' : target.kind === 'external-instance' ? target.url : linkedInstance?.baseUrl || linkedInstance?.host || '',
           label: target.instanceName || target.name || target.id,
           detail: isManagedTarget ? 'managed local instance' : target.kind === 'external-instance' ? target.url : linkedInstance?.baseUrl || 'local instance missing',
           apiKeyAvailable: Boolean(target.apiKeyAvailable),
