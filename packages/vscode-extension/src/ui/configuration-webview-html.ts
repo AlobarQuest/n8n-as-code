@@ -795,7 +795,7 @@ export function getConfigurationHtml(nonce: string): string {
     }
     function environmentConnectionCandidate() {
       const selected = selectedEnvironmentInstance();
-      const typedHost = normalizeHost(els.environmentRemoteUrl.value);
+      const typedHost = selected.mode === 'managed' ? '' : normalizeHost(els.environmentRemoteUrl.value);
       const selectedHost = normalizeHost(selected.url || '');
       const host = typedHost || selectedHost;
       const typedApiKey = els.environmentApiKey.value.trim();
@@ -1414,7 +1414,7 @@ export function getConfigurationHtml(nonce: string): string {
     function syncEnvironmentRemoteUrlFromSelection() {
       const selected = selectedEnvironmentInstance();
       els.environmentRemoteUrl.placeholder = 'https://my-instance.app.n8n.cloud';
-      els.environmentRemoteUrl.value = selected.url || '';
+      els.environmentRemoteUrl.value = selected.mode === 'managed' ? '' : selected.url || '';
     }
     function renderEnvironmentInstanceFields() {
       const selected = selectedEnvironmentInstance();

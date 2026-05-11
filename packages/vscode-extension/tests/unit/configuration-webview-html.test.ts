@@ -9,4 +9,6 @@ test('Configuration webview HTML: embedded script parses', () => {
     assert.ok(script, 'Must render an embedded webview script');
     assert.doesNotThrow(() => new Function(script));
     assert.ok(script.includes("split('\\\\').join('/')"), 'Must preserve backslash normalization in generated JavaScript');
+    assert.ok(script.includes("selected.mode === 'managed' ? '' : normalizeHost(els.environmentRemoteUrl.value)"), 'Managed environment selection must not be treated as typed remote URL');
+    assert.ok(script.includes("selected.mode === 'managed' ? '' : selected.url || ''"), 'Managed environment selection must keep the remote URL input empty');
 });
