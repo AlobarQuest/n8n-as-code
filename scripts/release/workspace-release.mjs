@@ -357,6 +357,51 @@ function buildVscodePrereleaseVersion(stableVersion, sequence) {
   });
 }
 
+function getVscodeMarketplaceVersions() {
+  const extensionPackageJson = readJson(getExtensionPackage().packageJsonPath);
+  const publisher = extensionPackageJson.publisher;
+  const extensionName = extensionPackageJson.name;
+  if (!publisher || !extensionName) {
+    return [];
+  }
+
+  try {
+    const response = execFileSync('curl', [
+      '-fsS',
+      '-X', 'POST',
+      'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1',
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify({
+        filters: [{ criteria: [{ filterType: 7, value: `${publisher}.${extensionName}` }] }],
+        flags: 529,
+      }),
+    ], {
+      cwd: workspaceRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const payload = JSON.parse(response);
+    return payload.results?.[0]?.extensions?.[0]?.versions?.map(version => version.version).filter(Boolean) || [];
+  } catch {
+    return [];
+  }
+}
+
+function getLatestMarketplaceVscodePrereleaseSequence(stableTargetVersion) {
+  const prereleaseLine = parseVersion(buildVscodePrereleaseVersion(stableTargetVersion, 1));
+  if (!prereleaseLine) {
+    return 0;
+  }
+
+  return getVscodeMarketplaceVersions().reduce((max, version) => {
+    const parsed = parseVersion(version);
+    if (!parsed || parsed.major !== prereleaseLine.major || parsed.minor !== prereleaseLine.minor) {
+      return max;
+    }
+    return Math.max(max, parsed.patch);
+  }, 0);
+}
+
 function assertVscodeStableLine(version, context) {
   const parsed = parseVersion(version);
   if (!parsed) {
@@ -820,19 +865,22 @@ function computeStablePlan() {
   });
 }
 
-function getPrereleaseSequence() {
+function getPrereleaseSequence(stablePlan) {
   const latestTag = getLatestStableTag(getExtensionPackage());
-  if (!latestTag) {
-    return 1;
-  }
+  const commitCount = latestTag
+    ? Number(git(['rev-list', '--count', `${latestTag.tag}..HEAD`]) || '0')
+    : 1;
+  const extensionPlan = stablePlan.packages.find(pkg => pkg.publishTarget === 'vscode');
+  const latestMarketplaceSequence = extensionPlan?.changed
+    ? getLatestMarketplaceVscodePrereleaseSequence(parseVersion(extensionPlan.targetVersion))
+    : 0;
 
-  const count = Number(git(['rev-list', '--count', `${latestTag.tag}..HEAD`]) || '0');
-  return Math.max(1, count);
+  return Math.max(1, commitCount, latestMarketplaceSequence + 1);
 }
 
 function computePrereleasePlan() {
   const stablePlan = computeStablePlan();
-  const sequence = getPrereleaseSequence();
+  const sequence = getPrereleaseSequence(stablePlan);
   const packages = stablePlan.packages.map(pkg => {
     if (!pkg.changed) {
       return {
