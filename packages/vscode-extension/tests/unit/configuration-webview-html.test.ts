@@ -12,4 +12,6 @@ test('Configuration webview HTML: embedded script parses', () => {
     assert.ok(script.includes("selected.mode === 'managed' ? '' : normalizeHost(els.environmentRemoteUrl.value)"), 'Managed environment selection must not be treated as typed remote URL');
     assert.ok(script.includes("selected.mode === 'managed' ? '' : selected.url || ''"), 'Managed environment selection must keep the remote URL input empty');
     assert.ok(script.includes("url: isManagedTarget ? '' : target.kind === 'external-instance'"), 'Managed environment targets must not expose a remote URL candidate');
+    assert.ok(script.includes("Stored API key will be reused"), 'Stored external API keys must be represented clearly in the environment form');
+    assert.ok(script.includes("apiKey: selected.mode === 'remote' && !environmentApiKeyMasked ? els.environmentApiKey.value : ''"), 'Masked stored API keys must not be submitted as literal password text');
 });

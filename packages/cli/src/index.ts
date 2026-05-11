@@ -750,11 +750,7 @@ environmentProgram.command('add')
                 url: urlOption,
             });
             environmentTarget = target.id;
-            configService.upsertRemoteInstancePreset({
-                host: urlOption,
-                apiKey: options.apiKey,
-                name,
-            });
+            if (options.apiKey) configService.saveWorkspaceTargetApiKey(target.id, options.apiKey);
         }
         if (options.managedInstance) {
             const target = await ensureManagedLocalTarget(configService, options.managedInstance);
@@ -811,11 +807,7 @@ environmentProgram.command('update')
                 url: urlOption,
             });
             environmentTarget = target.id;
-            configService.upsertRemoteInstancePreset({
-                host: urlOption,
-                apiKey: options.apiKey,
-                name: options.name || nameOrId,
-            });
+            if (options.apiKey) configService.saveWorkspaceTargetApiKey(target.id, options.apiKey);
         }
         if (options.managedInstance) {
             const target = await ensureManagedLocalTarget(configService, options.managedInstance);

@@ -701,6 +701,7 @@ export function getConfigurationHtml(nonce: string): string {
     let editingInstanceId = '';
     let editingTargetId = '';
     let editingEnvironmentId = '';
+    let environmentApiKeyMasked = false;
     let workspaceInstanceOverrideId = '';
     let connectingInstanceId = '';
     let credentialValues = { username: '', password: '' };
@@ -798,7 +799,7 @@ export function getConfigurationHtml(nonce: string): string {
       const typedHost = selected.mode === 'managed' ? '' : normalizeHost(els.environmentRemoteUrl.value);
       const selectedHost = normalizeHost(selected.url || '');
       const host = typedHost || selectedHost;
-      const typedApiKey = els.environmentApiKey.value.trim();
+      const typedApiKey = environmentApiKeyMasked ? '' : els.environmentApiKey.value.trim();
       const typedHostReplacesStored = Boolean(typedHost && selectedHost && typedHost !== selectedHost);
       const needsApiKey = selected.mode === 'remote' && (
         selected.source === 'manual' || typedHostReplacesStored || (!selected.apiKeyAvailable && !typedApiKey)
@@ -1416,6 +1417,20 @@ export function getConfigurationHtml(nonce: string): string {
       els.environmentRemoteUrl.placeholder = 'https://my-instance.app.n8n.cloud';
       els.environmentRemoteUrl.value = selected.mode === 'managed' ? '' : selected.url || '';
     }
+    function setStoredApiKeyMask(enabled) {
+      environmentApiKeyMasked = Boolean(enabled);
+      if (environmentApiKeyMasked) {
+        els.environmentApiKey.value = '**********************************************';
+        els.environmentApiKey.placeholder = 'Stored API key will be reused';
+      } else {
+        els.environmentApiKey.value = '';
+        els.environmentApiKey.placeholder = 'Paste API key for this instance';
+      }
+    }
+    function syncEnvironmentApiKeyFromSelection() {
+      const selected = selectedEnvironmentInstance();
+      setStoredApiKeyMask(selected.mode === 'remote' && selected.apiKeyAvailable);
+    }
     function renderEnvironmentInstanceFields() {
       const selected = selectedEnvironmentInstance();
       if (selected.source === 'action' && selected.id === 'create-local') {
@@ -1469,7 +1484,7 @@ export function getConfigurationHtml(nonce: string): string {
       els.environmentInstance.value = instanceChoice || (env?.environmentTargetId ? 'target:' + env.environmentTargetId : els.environmentInstance.options[0]?.value || '');
       els.environmentInstance.disabled = Boolean(editingEnvironmentId);
       syncEnvironmentRemoteUrlFromSelection();
-      els.environmentApiKey.value = '';
+      syncEnvironmentApiKeyFromSelection();
       renderEnvironmentInstanceFields();
       renderEnvironmentProjectOptions(env?.projectId || state.effective?.projectId || 'personal', env?.projectName || state.effective?.projectName || '');
       renderEnvironmentSyncOptions(env?.syncFolder || (els.environmentName.value ? 'workflows/' + slug(els.environmentName.value) : 'workflows/dev'));
@@ -1496,7 +1511,7 @@ export function getConfigurationHtml(nonce: string): string {
       els.environmentInstance.value = els.environmentInstance.options[0]?.value || '';
       syncEnvironmentRemoteUrlFromSelection();
       els.environmentRemoteUrl.value = '';
-      els.environmentApiKey.value = '';
+      setStoredApiKeyMask(false);
       renderEnvironmentInstanceFields();
       renderEnvironmentProjectOptions('personal', 'Personal');
       renderEnvironmentSyncOptions('workflows/dev');
@@ -1635,7 +1650,11 @@ export function getConfigurationHtml(nonce: string): string {
       renderEnvironmentInstanceFields();
     });
     els.environmentApiKey.addEventListener('input', () => {
+      if (environmentApiKeyMasked && els.environmentApiKey.value !== '**********************************************') environmentApiKeyMasked = false;
       renderEnvironmentInstanceFields();
+    });
+    els.environmentApiKey.addEventListener('focus', () => {
+      if (environmentApiKeyMasked) setStoredApiKeyMask(false);
     });
     els.environmentInstance.addEventListener('change', () => {
       if (selectedEnvironmentInstance().source === 'action') {
@@ -1643,6 +1662,7 @@ export function getConfigurationHtml(nonce: string): string {
         return;
       }
       syncEnvironmentRemoteUrlFromSelection();
+      syncEnvironmentApiKeyFromSelection();
       renderEnvironmentInstanceFields();
     });
     els.loadEnvironmentProjects.addEventListener('click', () => loadEnvironmentProjects(undefined));
@@ -1672,7 +1692,7 @@ export function getConfigurationHtml(nonce: string): string {
         environmentTargetId: selected.source === 'target' ? selected.id : '',
         instanceId: selected.source === 'global' ? selected.id : '',
         url: selected.mode === 'remote' ? normalizeHost(els.environmentRemoteUrl.value || selected.url) : '',
-        apiKey: selected.mode === 'remote' ? els.environmentApiKey.value : '',
+        apiKey: selected.mode === 'remote' && !environmentApiKeyMasked ? els.environmentApiKey.value : '',
         projectId: els.environmentProject.value,
         projectName: selectedProject?.dataset.projectName || selectedProject?.textContent || els.environmentProject.value,
         syncFolder: els.environmentSync.value,
@@ -1760,7 +1780,7 @@ export function getConfigurationHtml(nonce: string): string {
       } else if (message.type === 'environmentEditCredentials') {
         if (message.environmentId !== editingEnvironmentId || els.environmentModal.classList.contains('hidden')) return;
         els.environmentRemoteUrl.value = message.host || els.environmentRemoteUrl.value;
-        els.environmentApiKey.value = message.apiKey || '';
+        setStoredApiKeyMask(Boolean(message.apiKeyAvailable));
         setEnvironmentConnectionState(false, '', { step: 'connection' });
       } else if (message.type === 'error') {
         els.loadProjects.disabled = false;

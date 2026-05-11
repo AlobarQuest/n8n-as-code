@@ -165,7 +165,7 @@ export class ConfigurationWebview {
             type: 'environmentEditCredentials',
             environmentId,
             host: normalizeHost(environment.host || ''),
-            apiKey: environment.apiKey || '',
+            apiKeyAvailable: Boolean(environment.apiKey),
           });
           return;
         }
@@ -263,21 +263,18 @@ export class ConfigurationWebview {
                 name: instance.name || name || targetUrl,
                 url: targetUrl,
               });
+              const storedApiKey = configService.getApiKey(targetUrl, instance.id);
+              if (storedApiKey) configService.saveWorkspaceTargetApiKey(environmentTargetId, storedApiKey);
             }
           }
           if (!environmentTargetId && url) {
             const existingPreset = (await globalFacade.listInstances()).find((instance) => normalizeHost(instance.tunnelPublicUrl || instance.baseUrl || '') === url && instance.mode !== 'managed-local-docker');
-            configService.saveLocalConfig({ host: url }, {
-              instanceId: existingPreset?.id,
-              instanceName: existingPreset?.name || name || url,
-              createNew: !existingPreset,
-              setActive: false,
-              apiKey: apiKey || undefined,
-            });
             environmentTargetId = this.ensureEmbeddedWorkspaceTarget(configService, {
               name: name || existingPreset?.name || url,
               url,
             });
+            const storedApiKey = apiKey || (existingPreset ? configService.getApiKey(url, existingPreset.id) : undefined);
+            if (storedApiKey) configService.saveWorkspaceTargetApiKey(environmentTargetId, storedApiKey);
           }
           if (!environmentId && environmentTargetId && url) {
             const selectedTarget = configService.getInstanceTarget(environmentTargetId);
@@ -292,14 +289,7 @@ export class ConfigurationWebview {
             }
           }
           if (environmentTargetId && url && apiKey) {
-            const existingPreset = (await globalFacade.listInstances()).find((instance) => normalizeHost(instance.tunnelPublicUrl || instance.baseUrl || '') === url && instance.mode !== 'managed-local-docker');
-            configService.saveLocalConfig({ host: url }, {
-              instanceId: existingPreset?.id,
-              instanceName: existingPreset?.name || name || url,
-              createNew: !existingPreset,
-              setActive: false,
-              apiKey,
-            });
+            configService.saveWorkspaceTargetApiKey(environmentTargetId, apiKey);
           }
           const syncFolder = normalizeSyncRoot(String(payload.syncFolder || '').trim());
           const folderSync = typeof payload.folderSync === 'boolean' ? payload.folderSync : undefined;

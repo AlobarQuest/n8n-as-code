@@ -152,6 +152,7 @@ describe('CLI workspace integration', () => {
         const created = JSON.parse(runCli(workspaceDir, homeDir, [
             'env', 'add', 'Dev',
             '--base-url', 'https://dev.example.com',
+            '--api-key', 'dev-key',
             '--sync-folder', 'workflows/dev',
             '--json',
         ]));
@@ -174,6 +175,13 @@ describe('CLI workspace integration', () => {
             })],
         });
         expect(JSON.stringify(workspaceConfig)).not.toContain('apiKey');
+        expect(JSON.stringify(workspaceConfig)).not.toContain('dev-key');
+
+        const migration = JSON.parse(runCli(workspaceDir, homeDir, ['workspace', 'migrate', '--json']));
+        expect(migration).toMatchObject({
+            status: 'not-needed',
+            required: false,
+        });
     });
 
     it('stores env auth locally for external workspace targets', () => {
