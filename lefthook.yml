@@ -33,3 +33,8 @@ pre-commit:
                 plugins/claude/n8n-as-code/skills/n8n-architect/SKILL.md \
                 plugins/openclaw/n8n-as-code/skills/n8n-architect/SKILL.md \
                 plugins/cursor/n8n-as-code/skills/n8n-architect/SKILL.md
+
+post-rewrite:
+  commands:
+    regen-skill-adapters-after-rewrite:
+      run: npm run build:adapters:branch:stage --workspace=packages/skills

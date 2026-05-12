@@ -13,6 +13,8 @@
         "clean": "rm -rf dist tsconfig.tsbuildinfo",
         "test": "node --experimental-vm-modules ../../node_modules/.bin/jest",
         "build:adapters": "node scripts/build-skill-adapters.js",
+        "build:adapters:branch": "node scripts/build-skill-adapters-for-branch.js",
+        "build:adapters:branch:stage": "node scripts/build-skill-adapters-for-branch.js --stage",
         "check:adapters": "node scripts/build-skill-adapters.js --check"
     },
     "dependencies": {
