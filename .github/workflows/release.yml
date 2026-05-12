@@ -443,7 +443,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Generate tracked release assets
+      - name: Refresh skills n8n metadata
         run: npm run build --workspace=packages/skills
 
       - name: Refresh tags after stable publish
@@ -501,7 +501,6 @@ jobs:
             packages/mcp/package.json
             packages/skills/CHANGELOG.md
             packages/skills/package.json
-            packages/skills/src/assets/
             packages/telemetry/CHANGELOG.md
             packages/telemetry/package.json
             packages/transformer/CHANGELOG.md
