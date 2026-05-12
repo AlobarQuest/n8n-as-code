@@ -65,6 +65,29 @@ The configuration UI uses the same model as the CLI: workspace environments are 
 
 [VS Code / Cursor guide](https://n8nascode.dev/docs/usage/vscode-extension/)
 
+### Claude Code
+
+```text
+/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code
+/plugin install n8n-as-code@n8nac-marketplace
+```
+
+Then ask Claude to initialize n8n-as-code in the workspace. The `n8n-architect` skill uses `n8nac` as the primary interface and `n8n-manager` only for local managed instances, tunnels, and workflow presentation.
+
+[Claude setup docs](https://n8nascode.dev/docs/usage/claude-plugin/)
+
+### Generic Agent Skills
+
+Install the skill from the repository skills directory:
+
+```text
+https://github.com/EtienneLescot/n8n-as-code/tree/main/skills
+```
+
+If your agent asks for an explicit skill path, use `skills/n8n-architect`.
+
+[Skills reference](https://n8nascode.dev/docs/usage/skills/)
+
 ### CLI
 
 Create a workspace environment for an existing n8n URL:
@@ -93,29 +116,6 @@ npx --yes n8nac push workflows/dev/my-workflow.workflow.ts --verify
 ```
 
 [CLI guide](https://n8nascode.dev/docs/usage/cli/) · [n8n-manager guide](https://n8nascode.dev/docs/usage/n8n-manager/)
-
-### Claude Code
-
-```text
-/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code
-/plugin install n8n-as-code@n8nac-marketplace
-```
-
-Then ask Claude to initialize n8n-as-code in the workspace. The `n8n-architect` skill uses `n8nac` as the primary interface and `n8n-manager` only for local managed instances, tunnels, and workflow presentation.
-
-[Claude setup docs](https://n8nascode.dev/docs/usage/claude-plugin/)
-
-### Generic Agent Skills
-
-Install the skill from the repository skills directory:
-
-```text
-https://github.com/EtienneLescot/n8n-as-code/tree/main/skills
-```
-
-If your agent asks for an explicit skill path, use `skills/n8n-architect`.
-
-[Skills reference](https://n8nascode.dev/docs/usage/skills/)
 
 ## Command Groups
 
