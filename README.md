@@ -57,9 +57,9 @@ The repository stores workflow files, generated agent context, and workspace-saf
 
 1. Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) or [Open VSX](https://open-vsx.org/extension/etienne-lescot/n8n-as-code).
 2. Open a folder or `.code-workspace`.
-3. Open the `n8n` view and run `n8n: Configure`.
+3. Open the extension icon then on the gear icon to configure your workspace.
 4. Create or select an `n8n environment`.
-5. Pull or create workflows, then use the integrated Agent Workbench.
+5. Pull or create workflows with the integrated Agent Workbench or the agent of your choice.
 
 The configuration UI uses the same model as the CLI: workspace environments are repository context, local managed instances are machine resources.
 
