@@ -40,15 +40,15 @@ jobs:
         id: n8n-update-check
         run: |
           LATEST_TAG="${{ steps.n8n-tag.outputs.tag }}"
-          SCHEMA_VERSION=$(node -e "try { const j=require('./packages/skills/src/assets/n8n-nodes-technical.json'); process.stdout.write(j.n8nVersion||''); } catch { process.stdout.write(''); }" 2>/dev/null)
-          if [ "$SCHEMA_VERSION" = "$LATEST_TAG" ]; then
+          PACKAGE_VERSION=$(node -e "try { const j=require('./packages/skills/package.json'); process.stdout.write(j.n8nVersion ? 'n8n@' + j.n8nVersion : ''); } catch { process.stdout.write(''); }" 2>/dev/null)
+          if [ "$PACKAGE_VERSION" = "$LATEST_TAG" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "ℹ️  n8n version unchanged ($LATEST_TAG) — knowledge base rebuild not needed."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             N8N_SEMVER="${LATEST_TAG#n8n@}"
             echo "n8n_version=$N8N_SEMVER" >> "$GITHUB_OUTPUT"
-            echo "🔄 n8n version changed: '$SCHEMA_VERSION' → '$LATEST_TAG'"
+            echo "🔄 n8n version changed: '$PACKAGE_VERSION' → '$LATEST_TAG'"
           fi
 
       - name: Cache n8n repository
@@ -66,17 +66,15 @@ jobs:
         if: env.N8N_HOST != '' && env.N8N_API_KEY != ''
         run: npm test
 
-      - name: Commit and push knowledge base update
+      - name: Commit and push n8n version update
         if: steps.n8n-update-check.outputs.changed == 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if ls packages/skills/src/assets/*.json > /dev/null 2>&1; then
-            git add -f packages/skills/src/assets/*.json
-          fi
+          git add packages/skills/package.json
           if git diff --cached --quiet; then
-            echo "ℹ️  No asset changes detected after rebuild, skipping commit."
+            echo "ℹ️  No tracked n8n version changes detected after rebuild, skipping commit."
           else
-            git commit -m "fix(skills): rebuild knowledge base for n8n@${{ steps.n8n-update-check.outputs.n8n_version }}"
+            git commit -m "fix(skills): update knowledge base for n8n@${{ steps.n8n-update-check.outputs.n8n_version }}"
             git push
           fi
