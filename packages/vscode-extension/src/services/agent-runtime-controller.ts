@@ -1272,7 +1272,8 @@ export class AgentRuntimeController implements vscode.Disposable {
         const accumulator = this.createStreamAccumulator();
         let entries = [...initialEntries];
         let fileModificationDetected = false;
-        let finalOutput: unknown;
+        const activeMessageRoles = new Map<string, string>();
+        const activeToolNames = new Map<string, string>();
         const syncEntries = () => {
             if (!input.sessionId) return;
             this.writeSessionEntries(service, input.sessionId, entries);
@@ -1283,21 +1284,23 @@ export class AgentRuntimeController implements vscode.Disposable {
             await postMessage({ type: 'agent.streamEvent', event: streamEvent });
         };
 
-        await Promise.all([
-            this.consumeDeepAgentV3Messages(run, accumulator, emitStreamEvent, signal, contextWindowTokens),
-            this.consumeDeepAgentV3ToolCalls(run, emitStreamEvent, signal, (changed) => {
+        for await (const event of run) {
+            await this.throwIfAborted(signal);
+            if (event?.method === 'messages') {
+                await this.processDeepAgentV3MessageEvent(event, accumulator, activeMessageRoles, contextWindowTokens, emitStreamEvent);
+                continue;
+            }
+            if (event?.method === 'tools') {
+                const changed = await this.processDeepAgentV3ToolEvent(event, activeToolNames, emitStreamEvent);
                 fileModificationDetected = fileModificationDetected || changed;
-            }),
-            (async () => {
-                finalOutput = await run.output;
-            })(),
-        ]);
+            }
+        }
 
         await this.throwIfAborted(signal);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
-            response: accumulator.responseText || this.extractAgentText(finalOutput),
+            response: accumulator.responseText,
             finalState: run.interrupted ? 'interrupted' : 'done',
         };
         await emitStreamEvent(finalEvent);
@@ -1308,156 +1311,167 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: fileModificationDetected };
     }
 
-    private async consumeDeepAgentV3Messages(
-        run: any,
+    private async processDeepAgentV3MessageEvent(
+        event: any,
         accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
+        activeMessageRoles: Map<string, string>,
         contextWindowTokens: number,
+        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
     ): Promise<void> {
-        for await (const message of run.messages) {
-            await this.throwIfAborted(signal);
-            const thinkingOperationId = `thinking:${randomUUID()}`;
-            await Promise.all([
-                (async () => {
-                    for await (const delta of message.text) {
-                        await this.throwIfAborted(signal);
-                        if (!delta) continue;
-                        accumulator.responseText += delta;
-                        if (accumulator.thinkingText) {
-                            await emitStreamEvent({
-                                type: 'operation',
-                                operationId: accumulator.thinkingOperationId || thinkingOperationId,
-                                label: 'Thinking',
-                                category: 'thinking',
-                                status: 'done',
-                                body: accumulator.thinkingText,
-                                startedAt: Date.now(),
-                                endedAt: Date.now(),
-                            });
-                            accumulator.thinkingText = '';
-                            accumulator.thinkingOperationId = undefined;
-                        }
-                        await emitStreamEvent({ type: 'text-delta', delta });
-                    }
-                })(),
-                (async () => {
-                    for await (const delta of message.reasoning) {
-                        await this.throwIfAborted(signal);
-                        if (!delta) continue;
-                        accumulator.thinkingText += delta;
-                        accumulator.thinkingOperationId ||= thinkingOperationId;
-                        await emitStreamEvent({
-                            type: 'operation',
-                            operationId: accumulator.thinkingOperationId,
-                            label: 'Thinking',
-                            category: 'thinking',
-                            status: 'running',
-                            body: accumulator.thinkingText,
-                            startedAt: Date.now(),
-                        });
-                    }
-                    if (accumulator.thinkingText && accumulator.thinkingOperationId === thinkingOperationId) {
-                        await emitStreamEvent({
-                            type: 'operation',
-                            operationId: thinkingOperationId,
-                            label: 'Thinking',
-                            category: 'thinking',
-                            status: 'done',
-                            body: accumulator.thinkingText,
-                            startedAt: Date.now(),
-                            endedAt: Date.now(),
-                        });
-                        accumulator.thinkingText = '';
-                        accumulator.thinkingOperationId = undefined;
-                    }
-                })(),
-                (async () => {
-                    for await (const usage of message.usage) {
-                        await this.throwIfAborted(signal);
-                        const streamEvent = this.contextUsageEventFromUsage(usage, contextWindowTokens);
-                        if (streamEvent) await emitStreamEvent(streamEvent);
-                    }
-                })(),
-            ]);
+        const data = event?.params?.data;
+        if (!this.isRecord(data)) return;
+        const key = this.getV3MessageKey(data);
+        if (data.event === 'message-start') {
+            activeMessageRoles.set(key, typeof data.role === 'string' ? data.role : 'ai');
+            const usageEvent = this.contextUsageEventFromUsage(data.usage, contextWindowTokens);
+            if (usageEvent) await emitStreamEvent(usageEvent);
+            return;
+        }
+        const role = activeMessageRoles.get(key) || 'ai';
+        if (data.event === 'message-finish') {
+            const usageEvent = this.contextUsageEventFromUsage(data.usage, contextWindowTokens);
+            if (usageEvent) await emitStreamEvent(usageEvent);
+            activeMessageRoles.delete(key);
+            if (accumulator.thinkingText) {
+                await this.finishThinkingOperation(accumulator, emitStreamEvent);
+            }
+            return;
+        }
+        if (role !== 'ai') {
+            return;
+        }
+        const delta = this.extractV3MessageDelta(data);
+        if (delta.thinkingDelta) {
+            accumulator.thinkingText += delta.thinkingDelta;
+            accumulator.thinkingOperationId ||= `thinking:${key}`;
+            await emitStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'running',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+            });
+        }
+        if (delta.textDelta) {
+            if (accumulator.thinkingText) {
+                await this.finishThinkingOperation(accumulator, emitStreamEvent);
+            }
+            accumulator.responseText += delta.textDelta;
+            await emitStreamEvent({ type: 'text-delta', delta: delta.textDelta });
         }
     }
 
-    private async consumeDeepAgentV3ToolCalls(
-        run: any,
+    private async processDeepAgentV3ToolEvent(
+        event: any,
+        activeToolNames: Map<string, string>,
         emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
-        onFileModification: (changed: boolean) => void,
-    ): Promise<void> {
-        for await (const toolCall of run.toolCalls) {
-            await this.throwIfAborted(signal);
-            const toolName = String(toolCall?.name || 'tool');
+    ): Promise<boolean> {
+        const data = event?.params?.data;
+        if (!this.isRecord(data)) return false;
+        const toolCallId = String(data.tool_call_id || data.toolCallId || 'unknown');
+        if (data.event === 'tool-started') {
+            const toolName = String(data.tool_name || data.name || 'tool');
+            activeToolNames.set(toolCallId, toolName);
             if (!this.shouldShowToolOperation(toolName)) {
-                continue;
+                return false;
             }
             const category = this.categorizeTool(toolName);
-            const operationId = `${toolName}:${String(toolCall?.callId || randomUUID())}`;
-            const command = category === 'shell' ? this.extractCommandFromToolPayload(toolCall.input) : undefined;
-            const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(toolCall.input) : undefined;
-            const todoSummary = category === 'todo' ? this.extractTodoSummary(toolCall.input) : undefined;
+            const operationId = this.getV3ToolOperationId(toolName, toolCallId);
+            const command = category === 'shell' ? this.extractCommandFromToolPayload(data.input) : undefined;
+            const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(data.input) : undefined;
+            const todoSummary = category === 'todo' ? this.extractTodoSummary(data.input) : undefined;
             await emitStreamEvent({
                 type: 'operation',
                 operationId,
                 label: this.formatToolLabel(toolName),
                 category,
                 status: 'running',
-                body: category === 'todo' ? this.stringifyToolPayload(toolCall.input) : command ? `$ ${command}` : this.stringifyToolPayload(toolCall.input),
+                body: category === 'todo' ? this.stringifyToolPayload(data.input) : command ? `$ ${command}` : this.stringifyToolPayload(data.input),
                 summary: command ? `$ ${command}` : filePath || todoSummary,
                 startedAt: Date.now(),
             });
-
-            let status: string;
-            let output: unknown;
-            let error: unknown;
-            try {
-                [status, output, error] = await Promise.all([
-                    toolCall.status.catch(() => 'error'),
-                    toolCall.output.catch((caught: unknown) => {
-                        error = caught;
-                        return undefined;
-                    }),
-                    toolCall.error.catch(() => undefined),
-                ]);
-            } catch (caught) {
-                status = 'error';
-                error = caught;
-            }
-            await this.throwIfAborted(signal);
-            const outputText = this.stringifyToolOutput(output) || (error ? String(error) : undefined);
+            return false;
+        }
+        if (data.event !== 'tool-finished' && data.event !== 'tool-error') {
+            return false;
+        }
+        const toolName = activeToolNames.get(toolCallId) || String(data.tool_name || data.name || 'tool');
+        activeToolNames.delete(toolCallId);
+        if (!this.shouldShowToolOperation(toolName)) {
+            return false;
+        }
+        const category = this.categorizeTool(toolName);
+        const output = data.output;
+        const error = data.message || data.error;
+        const outputText = this.stringifyToolOutput(output) || (error ? String(error) : undefined);
+        const streamEvent: AgentStreamEvent = {
+            type: 'operation',
+            operationId: this.getV3ToolOperationId(toolName, toolCallId),
+            label: this.formatToolLabel(toolName),
+            category,
+            status: data.event === 'tool-error' ? 'error' : 'done',
+            summary: this.truncateOperationDetail(outputText),
+            body: outputText,
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+        };
+        await emitStreamEvent(streamEvent);
+        const compaction = this.extractCompactionSummary(output);
+        if (compaction) {
             const streamEvent: AgentStreamEvent = {
-                type: 'operation',
-                operationId,
-                label: this.formatToolLabel(toolName),
-                category,
-                status: status === 'error' ? 'error' : 'done',
-                summary: this.truncateOperationDetail(outputText) || command || filePath || todoSummary,
-                body: outputText,
-                startedAt: Date.now(),
-                endedAt: Date.now(),
+                type: 'compaction',
+                summary: compaction.summary,
+                source: compaction.source,
+                messagesCompacted: compaction.messagesCompacted,
+                preservedRecentMessages: compaction.preservedRecentMessages,
+                estimatedTokens: compaction.estimatedTokens,
+                thresholdTokens: compaction.thresholdTokens,
+                fallbackReason: compaction.fallbackReason,
             };
             await emitStreamEvent(streamEvent);
-            if (streamEvent.status === 'done' && streamEvent.category === 'file-write') {
-                onFileModification(true);
-            }
-            const compaction = this.extractCompactionSummary(output);
-            if (compaction) {
-                await emitStreamEvent({
-                    type: 'compaction',
-                    summary: compaction.summary,
-                    source: compaction.source,
-                    messagesCompacted: compaction.messagesCompacted,
-                    preservedRecentMessages: compaction.preservedRecentMessages,
-                    estimatedTokens: compaction.estimatedTokens,
-                    thresholdTokens: compaction.thresholdTokens,
-                    fallbackReason: compaction.fallbackReason,
-                });
-            }
         }
+        return streamEvent.status === 'done' && streamEvent.category === 'file-write';
+    }
+
+    private getV3MessageKey(data: Record<string, unknown>): string {
+        return String(data.run_id || data.id || data.tool_call_id || '__default__');
+    }
+
+    private getV3ToolOperationId(toolName: string, toolCallId: string): string {
+        return `${toolName}:${toolCallId || 'unknown'}`;
+    }
+
+    private extractV3MessageDelta(data: Record<string, unknown>): { textDelta?: string; thinkingDelta?: string } {
+        if (data.event !== 'content-block-delta') return {};
+        const delta = this.isRecord(data.delta) ? data.delta : undefined;
+        if (delta?.type === 'text-delta' && typeof delta.text === 'string') {
+            return { textDelta: delta.text };
+        }
+        if (delta?.type === 'reasoning-delta' && typeof delta.reasoning === 'string') {
+            return { thinkingDelta: delta.reasoning };
+        }
+        return {};
+    }
+
+    private async finishThinkingOperation(
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
+    ): Promise<void> {
+        if (!accumulator.thinkingText) return;
+        await emitStreamEvent({
+            type: 'operation',
+            operationId: accumulator.thinkingOperationId || `thinking:${randomUUID()}`,
+            label: 'Thinking',
+            category: 'thinking',
+            status: 'done',
+            body: accumulator.thinkingText,
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+        });
+        accumulator.thinkingText = '';
+        accumulator.thinkingOperationId = undefined;
     }
 
     private async consumeDeepAgentV2Stream(

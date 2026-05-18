@@ -586,6 +586,48 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             display: grid;
             gap: 4px;
         }
+        .todo-checklist {
+            display: grid;
+            gap: 5px;
+            margin-top: 4px;
+        }
+        .todo-item {
+            display: grid;
+            grid-template-columns: 16px minmax(0, 1fr);
+            gap: 7px;
+            align-items: start;
+            color: var(--text);
+            font-size: 12px;
+        }
+        .todo-box {
+            display: inline-grid;
+            place-items: center;
+            width: 13px;
+            height: 13px;
+            margin-top: 2px;
+            border: 1px solid color-mix(in srgb, var(--muted) 72%, transparent);
+            border-radius: 3px;
+            color: var(--accent-text);
+            background: transparent;
+            font-size: 10px;
+            line-height: 1;
+        }
+        .todo-item.completed .todo-box {
+            border-color: var(--success);
+            background: color-mix(in srgb, var(--success) 72%, transparent);
+        }
+        .todo-item.in-progress .todo-box {
+            border-color: var(--warning);
+            background: color-mix(in srgb, var(--warning) 18%, transparent);
+        }
+        .todo-text {
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .todo-item.completed .todo-text {
+            color: var(--muted);
+            text-decoration: line-through;
+        }
         .todo-line {
             display: grid;
             grid-template-columns: 86px minmax(0, 1fr);
@@ -2023,7 +2065,22 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             return '<div class="operation-compact">' +
                 operationRowHtml('Todos', summary, false) +
                 (active && active.content ? operationRowHtml(active.status === 'in_progress' ? 'Current' : 'Next', String(active.content), false) : '') +
+                formatTodoChecklistHtml(todos) +
                 '</div>';
+        }
+
+        function formatTodoChecklistHtml(todos) {
+            if (!todos.length) return '';
+            return '<div class="todo-checklist">' + todos.map((todo) => {
+                const status = String(todo.status || 'pending');
+                const normalized = status.replace(/_/g, '-');
+                const checked = status === 'completed';
+                const marker = checked ? '✓' : status === 'in_progress' ? '·' : '';
+                return '<div class="todo-item ' + escapeHtml(normalized) + '">' +
+                    '<span class="todo-box" aria-hidden="true">' + escapeHtml(marker) + '</span>' +
+                    '<span class="todo-text">' + escapeHtml(String(todo.content || '')) + '</span>' +
+                    '</div>';
+            }).join('') + '</div>';
         }
 
         function extractTodosFromValue(value) {
