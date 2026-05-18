@@ -1214,7 +1214,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         const sessions = await this.getSessionRuntime();
         sessions.service.setCheckpointer(handle.checkpointer);
         const agent = handle.agent;
-        let messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
+        const messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
         const contextWindowTokens = await this.resolveContextWindow(providerConfig.provider, providerConfig.model, providerConfig.apiKey, providerConfig.baseUrl);
         const config = {
             ...sessions.service.buildSessionConfig(input.sessionId || ''),
@@ -1223,33 +1223,19 @@ export class AgentRuntimeController implements vscode.Disposable {
 
         let entries = [...initialEntries];
 
-        if (typeof (agent as any).streamEvents === 'function' && !this.shouldUseDeepAgentsV3Stream()) {
+        if (typeof (agent as any).streamEvents === 'function') {
+            let v3Run: any;
+            try {
+                v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
+            } catch (error: any) {
+                this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
+            }
+            if (this.isDeepAgentV3Run(v3Run)) {
+                return await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+            }
+
             const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
             return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
-        }
-
-        if (typeof (agent as any).streamEvents === 'function') {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                let v3Run: any;
-                try {
-                    v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
-                } catch (error: any) {
-                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
-                }
-                if (this.isDeepAgentV3Run(v3Run)) {
-                    const result = await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
-                    entries = result.entries;
-                    if (result.repairPrompt && attempt === 0) {
-                        this.outputChannel.appendLine(`[n8n-agent-debug] retrying after invalid tool call sessionId=${input.sessionId || 'none'}`);
-                        messages = [{ role: 'user', content: result.repairPrompt }];
-                        continue;
-                    }
-                    return result;
-                }
-
-                const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
-                return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
-            }
         }
 
         const result = await (agent as any).invoke({ messages }, config);
@@ -1263,10 +1249,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         entries = this.applyStreamEvent(entries, finalEvent);
         await postMessage({ type: 'agent.streamEvent', event: finalEvent });
         return { entries, workflowChanged: false };
-    }
-
-    private shouldUseDeepAgentsV3Stream(): boolean {
-        return process.env.N8N_AGENT_DEEPAGENTS_V3 === '1';
     }
 
     private isDeepAgentV3Run(value: unknown): boolean {
@@ -1286,12 +1268,9 @@ export class AgentRuntimeController implements vscode.Disposable {
         postMessage: AgentWorkbenchPostMessage,
         signal: AbortSignal,
         contextWindowTokens: number,
-    ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean; repairPrompt?: string }> {
-        const accumulator = this.createStreamAccumulator();
+    ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean }> {
         let entries = [...initialEntries];
         let fileModificationDetected = false;
-        const activeMessageRoles = new Map<string, string>();
-        const activeToolNames = new Map<string, string>();
         const finalOutputPromise = Promise.resolve(run.output).catch((error: unknown) => {
             this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 final output unavailable: ${error instanceof Error ? error.message : String(error)}`);
             return undefined;
@@ -1306,29 +1285,15 @@ export class AgentRuntimeController implements vscode.Disposable {
             await postMessage({ type: 'agent.streamEvent', event: streamEvent });
         };
 
-        for await (const event of run) {
-            await this.throwIfAborted(signal);
-            if (event?.method === 'messages') {
-                await this.processDeepAgentV3MessageEvent(event, accumulator, activeMessageRoles, contextWindowTokens, emitStreamEvent);
-                continue;
-            }
-            if (event?.method === 'tools') {
-                const changed = await this.processDeepAgentV3ToolEvent(event, activeToolNames, emitStreamEvent);
-                fileModificationDetected = fileModificationDetected || changed;
-            }
-        }
+        const [responseText, changed] = await Promise.all([
+            this.consumeDeepAgentV3MessagesProjection(run.messages, contextWindowTokens, emitStreamEvent, signal),
+            this.consumeDeepAgentV3ToolCallsProjection(run.toolCalls, emitStreamEvent, signal),
+        ]);
+        fileModificationDetected = changed;
 
         await this.throwIfAborted(signal);
         const finalOutput = await finalOutputPromise;
-        const finalResponse = accumulator.responseText || this.extractAssistantTextFromAgentOutput(finalOutput);
-        const repairPrompt = finalResponse ? undefined : this.buildInvalidToolCallRepairPrompt(finalOutput);
-        if (repairPrompt) {
-            const notice = this.createSystemNotice('The model emitted an invalid tool call. Retrying once with corrected tool-call instructions.');
-            entries = [...entries, notice];
-            syncEntries();
-            await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: input.sessionId }) });
-            return { entries, workflowChanged: fileModificationDetected, repairPrompt };
-        }
+        const finalResponse = responseText || this.extractAssistantTextFromAgentOutput(finalOutput);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
@@ -1343,107 +1308,133 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: fileModificationDetected };
     }
 
-    private async processDeepAgentV3MessageEvent(
-        event: any,
-        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
-        activeMessageRoles: Map<string, string>,
+    private async consumeDeepAgentV3MessagesProjection(
+        messages: AsyncIterable<any>,
         contextWindowTokens: number,
         emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-    ): Promise<void> {
-        const data = event?.params?.data;
-        if (!this.isRecord(data)) return;
-        const key = this.getV3MessageKey(data);
-        if (data.event === 'message-start') {
-            activeMessageRoles.set(key, typeof data.role === 'string' ? data.role : 'ai');
-            const usageEvent = this.contextUsageEventFromUsage(data.usage, contextWindowTokens);
-            if (usageEvent) await emitStreamEvent(usageEvent);
-            return;
-        }
-        const role = activeMessageRoles.get(key) || 'ai';
-        if (data.event === 'message-finish') {
-            const usageEvent = this.contextUsageEventFromUsage(data.usage, contextWindowTokens);
-            if (usageEvent) await emitStreamEvent(usageEvent);
-            activeMessageRoles.delete(key);
-            if (accumulator.thinkingText) {
-                await this.finishThinkingOperation(accumulator, emitStreamEvent);
+        signal: AbortSignal,
+    ): Promise<string> {
+        let responseText = '';
+        for await (const message of messages) {
+            await this.throwIfAborted(signal);
+            const namespace = Array.isArray(message?.namespace) ? message.namespace : [];
+            if (namespace.length > 0) {
+                continue;
             }
-            return;
+            responseText += await this.consumeDeepAgentV3MessageHandle(message, contextWindowTokens, emitStreamEvent, signal);
         }
-        if (role !== 'ai') {
-            return;
-        }
-        const delta = this.extractV3MessageDelta(data);
-        if (delta.thinkingDelta) {
-            accumulator.thinkingText += delta.thinkingDelta;
-            accumulator.thinkingOperationId ||= `thinking:${key}`;
-            await emitStreamEvent({
-                type: 'operation',
-                operationId: accumulator.thinkingOperationId,
-                label: 'Thinking',
-                category: 'thinking',
-                status: 'running',
-                body: accumulator.thinkingText,
-                startedAt: Date.now(),
-            });
-        }
-        if (delta.textDelta) {
-            if (accumulator.thinkingText) {
-                await this.finishThinkingOperation(accumulator, emitStreamEvent);
-            }
-            accumulator.responseText += delta.textDelta;
-            await emitStreamEvent({ type: 'text-delta', delta: delta.textDelta });
-        }
+        return responseText;
     }
 
-    private async processDeepAgentV3ToolEvent(
-        event: any,
-        activeToolNames: Map<string, string>,
+    private async consumeDeepAgentV3MessageHandle(
+        message: any,
+        contextWindowTokens: number,
         emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
+        signal: AbortSignal,
+    ): Promise<string> {
+        const accumulator = this.createStreamAccumulator();
+        const key = String(message?.id || message?.runId || message?.node || randomUUID());
+        await Promise.all([
+            (async () => {
+                for await (const delta of message.text || []) {
+                    await this.throwIfAborted(signal);
+                    if (typeof delta !== 'string' || !delta) continue;
+                    if (accumulator.thinkingText) {
+                        await this.finishThinkingOperation(accumulator, emitStreamEvent);
+                    }
+                    accumulator.responseText += delta;
+                    await emitStreamEvent({ type: 'text-delta', delta });
+                }
+            })(),
+            (async () => {
+                for await (const delta of message.reasoning || []) {
+                    await this.throwIfAborted(signal);
+                    if (typeof delta !== 'string' || !delta) continue;
+                    accumulator.thinkingText += delta;
+                    accumulator.thinkingOperationId ||= `thinking:${key}`;
+                    await emitStreamEvent({
+                        type: 'operation',
+                        operationId: accumulator.thinkingOperationId,
+                        label: 'Thinking',
+                        category: 'thinking',
+                        status: 'running',
+                        body: accumulator.thinkingText,
+                        startedAt: Date.now(),
+                    });
+                }
+            })(),
+            (async () => {
+                for await (const usage of message.usage || []) {
+                    await this.throwIfAborted(signal);
+                    const usageEvent = this.contextUsageEventFromUsage(usage, contextWindowTokens);
+                    if (usageEvent) await emitStreamEvent(usageEvent);
+                }
+            })(),
+        ]);
+        if (accumulator.thinkingText) {
+            await this.finishThinkingOperation(accumulator, emitStreamEvent);
+        }
+        return accumulator.responseText;
+    }
+
+    private async consumeDeepAgentV3ToolCallsProjection(
+        toolCalls: AsyncIterable<any>,
+        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
+        signal: AbortSignal,
     ): Promise<boolean> {
-        const data = event?.params?.data;
-        if (!this.isRecord(data)) return false;
-        const toolCallId = String(data.tool_call_id || data.toolCallId || 'unknown');
-        if (data.event === 'tool-started') {
-            const toolName = String(data.tool_name || data.name || 'tool');
-            activeToolNames.set(toolCallId, toolName);
-            if (!this.shouldShowToolOperation(toolName)) {
-                return false;
-            }
-            const category = this.categorizeTool(toolName);
-            const operationId = this.getV3ToolOperationId(toolName, toolCallId);
-            const command = category === 'shell' ? this.extractCommandFromToolPayload(data.input) : undefined;
-            const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(data.input) : undefined;
-            const todoSummary = category === 'todo' ? this.extractTodoSummary(data.input) : undefined;
-            await emitStreamEvent({
-                type: 'operation',
-                operationId,
-                label: this.formatToolLabel(toolName),
-                category,
-                status: 'running',
-                body: category === 'todo' ? this.stringifyToolPayload(data.input) : command ? `$ ${command}` : this.stringifyToolPayload(data.input),
-                summary: command ? `$ ${command}` : filePath || todoSummary,
-                startedAt: Date.now(),
-            });
-            return false;
+        let fileModificationDetected = false;
+        for await (const call of toolCalls) {
+            await this.throwIfAborted(signal);
+            const changed = await this.consumeDeepAgentV3ToolCall(call, emitStreamEvent, signal);
+            fileModificationDetected = fileModificationDetected || changed;
         }
-        if (data.event !== 'tool-finished' && data.event !== 'tool-error') {
-            return false;
-        }
-        const toolName = activeToolNames.get(toolCallId) || String(data.tool_name || data.name || 'tool');
-        activeToolNames.delete(toolCallId);
+        return fileModificationDetected;
+    }
+
+    private async consumeDeepAgentV3ToolCall(
+        call: any,
+        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
+        signal: AbortSignal,
+    ): Promise<boolean> {
+        const toolName = String(call?.name || 'tool');
         if (!this.shouldShowToolOperation(toolName)) {
+            await Promise.allSettled([call?.status, call?.output, call?.error]);
             return false;
         }
+        const toolCallId = String(call?.callId || randomUUID());
         const category = this.categorizeTool(toolName);
-        const output = data.output;
-        const error = data.message || data.error;
-        const outputText = this.stringifyToolOutput(output) || (error ? String(error) : undefined);
-        const streamEvent: AgentStreamEvent = {
+        const operationId = this.getV3ToolOperationId(toolName, toolCallId);
+        const command = category === 'shell' ? this.extractCommandFromToolPayload(call?.input) : undefined;
+        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(call?.input) : undefined;
+        const todoSummary = category === 'todo' ? this.extractTodoSummary(call?.input) : undefined;
+        await emitStreamEvent({
             type: 'operation',
-            operationId: this.getV3ToolOperationId(toolName, toolCallId),
+            operationId,
             label: this.formatToolLabel(toolName),
             category,
-            status: data.event === 'tool-error' ? 'error' : 'done',
+            status: 'running',
+            body: category === 'todo' ? this.stringifyToolPayload(call?.input) : command ? `$ ${command}` : this.stringifyToolPayload(call?.input),
+            summary: command ? `$ ${command}` : filePath || todoSummary,
+            startedAt: Date.now(),
+        });
+
+        const status = await Promise.resolve(call?.status).catch(() => 'error');
+        await this.throwIfAborted(signal);
+        let output: unknown;
+        let errorText: string | undefined;
+        try {
+            output = await Promise.resolve(call?.output);
+        } catch (error: unknown) {
+            errorText = error instanceof Error ? error.message : String(error);
+        }
+        errorText ||= await Promise.resolve(call?.error).catch(() => undefined);
+        const outputText = this.stringifyToolOutput(output) || errorText;
+        const streamEvent: AgentStreamEvent = {
+            type: 'operation',
+            operationId,
+            label: this.formatToolLabel(toolName),
+            category,
+            status: status === 'error' ? 'error' : 'done',
             summary: this.truncateOperationDetail(outputText),
             body: outputText,
             startedAt: Date.now(),
@@ -1452,7 +1443,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         await emitStreamEvent(streamEvent);
         const compaction = this.extractCompactionSummary(output);
         if (compaction) {
-            const streamEvent: AgentStreamEvent = {
+            await emitStreamEvent({
                 type: 'compaction',
                 summary: compaction.summary,
                 source: compaction.source,
@@ -1461,30 +1452,13 @@ export class AgentRuntimeController implements vscode.Disposable {
                 estimatedTokens: compaction.estimatedTokens,
                 thresholdTokens: compaction.thresholdTokens,
                 fallbackReason: compaction.fallbackReason,
-            };
-            await emitStreamEvent(streamEvent);
+            });
         }
         return streamEvent.status === 'done' && streamEvent.category === 'file-write';
     }
 
-    private getV3MessageKey(data: Record<string, unknown>): string {
-        return String(data.run_id || data.id || data.tool_call_id || '__default__');
-    }
-
     private getV3ToolOperationId(toolName: string, toolCallId: string): string {
         return `${toolName}:${toolCallId || 'unknown'}`;
-    }
-
-    private extractV3MessageDelta(data: Record<string, unknown>): { textDelta?: string; thinkingDelta?: string } {
-        if (data.event !== 'content-block-delta') return {};
-        const delta = this.isRecord(data.delta) ? data.delta : undefined;
-        if (delta?.type === 'text-delta' && typeof delta.text === 'string') {
-            return { textDelta: delta.text };
-        }
-        if (delta?.type === 'reasoning-delta' && typeof delta.reasoning === 'string') {
-            return { thinkingDelta: delta.reasoning };
-        }
-        return {};
     }
 
     private async finishThinkingOperation(
@@ -1719,6 +1693,8 @@ export class AgentRuntimeController implements vscode.Disposable {
     private async getDeepAgentHandle(providerConfig: ProviderRuntimeConfig, input: AgentPromptInput): Promise<DeepAgentHandle> {
         const rootDir = input.workspaceRoot || process.cwd();
         const deepagents = await importRuntimeModule('deepagents');
+        const langchain = await importRuntimeModule('langchain');
+        const messagesModule = await importRuntimeModule('@langchain/core/messages');
         const memorySources = await this.getAgentMemorySources(rootDir);
         const skillSourcePaths = await this.getAgentSkillSources(rootDir);
         const key = JSON.stringify({
@@ -1747,11 +1723,108 @@ export class AgentRuntimeController implements vscode.Disposable {
             backend,
             memory: memorySources,
             skills: skillSourcePaths,
+            middleware: [
+                this.createInvalidToolCallRecoveryMiddleware(langchain, messagesModule),
+            ].filter(Boolean),
             systemPrompt: this.buildStaticSystemPrompt(input.workspaceRoot),
         });
         const handle = { agent, checkpointer };
         this.cachedAgentHandle = { key, handle };
         return handle;
+    }
+
+    private createInvalidToolCallRecoveryMiddleware(langchain: any, messagesModule: any): unknown {
+        const createMiddleware = langchain?.createMiddleware;
+        const AIMessage = messagesModule?.AIMessage;
+        const HumanMessage = messagesModule?.HumanMessage;
+        const RemoveMessage = messagesModule?.RemoveMessage;
+        if (typeof createMiddleware !== 'function' || typeof AIMessage !== 'function' || typeof HumanMessage !== 'function' || typeof RemoveMessage !== 'function') {
+            return undefined;
+        }
+        return createMiddleware({
+            name: 'N8nInvalidToolCallRecovery',
+            afterModel: {
+                canJumpTo: ['model', 'end'],
+                hook: (state: any) => {
+                    const messages = Array.isArray(state?.messages) ? state.messages : [];
+                    const lastMessage = messages[messages.length - 1];
+                    const invalidCalls = this.extractInvalidToolCallsFromMessage(lastMessage);
+                    if (!invalidCalls.length) return undefined;
+                    const recoveryAttempts = this.countRecentInvalidToolCallRecoveryAttempts(messages);
+                    if (recoveryAttempts >= 2) {
+                        this.outputChannel.appendLine('[n8n-agent] Stopping invalid tool-call recovery after two failed repair attempts.');
+                        const lastMessageId = this.getMessageId(lastMessage);
+                        return {
+                            messages: [
+                                ...(lastMessageId ? [new RemoveMessage({ id: lastMessageId })] : []),
+                                new AIMessage('I could not construct a valid tool call after two repair attempts, so I stopped before executing malformed arguments. Please rephrase the request or choose a more specific next step.'),
+                            ],
+                            jumpTo: 'end',
+                        };
+                    }
+                    this.outputChannel.appendLine(`[n8n-agent-debug] recovering invalid tool call attempt=${recoveryAttempts + 1}`);
+                    const repairMessage = new HumanMessage({
+                        content: this.buildInvalidToolCallRecoveryPrompt(invalidCalls),
+                    });
+                    const lastMessageId = this.getMessageId(lastMessage);
+                    return {
+                        messages: [
+                            ...(lastMessageId ? [new RemoveMessage({ id: lastMessageId })] : []),
+                            repairMessage,
+                        ],
+                        jumpTo: 'model',
+                    };
+                },
+            },
+        });
+    }
+
+    private countRecentInvalidToolCallRecoveryAttempts(messages: unknown[]): number {
+        let attempts = 0;
+        for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+            const message = messages[idx];
+            if (!this.isRecord(message)) continue;
+            const text = this.extractMessageTextContent(message.content);
+            if (text.includes('N8N_INVALID_TOOL_CALL_RECOVERY')) {
+                attempts += 1;
+                continue;
+            }
+            if (this.getMessageType(message) === 'human') {
+                break;
+            }
+        }
+        return attempts;
+    }
+
+    private getMessageId(message: unknown): string | undefined {
+        if (!this.isRecord(message)) return undefined;
+        if (typeof message.id === 'string') return message.id;
+        const kwargs = this.isRecord(message.kwargs) ? message.kwargs : undefined;
+        if (typeof kwargs?.id === 'string') return kwargs.id;
+        const lcKwargs = this.isRecord(message.lc_kwargs) ? message.lc_kwargs : undefined;
+        if (typeof lcKwargs?.id === 'string') return lcKwargs.id;
+        return undefined;
+    }
+
+    private buildInvalidToolCallRecoveryPrompt(invalidCalls: Array<{ name?: string; args?: string; error?: string }>): string {
+        const details = invalidCalls.map((call, index) => [
+            `${index + 1}. Tool: ${call.name || 'unknown'}`,
+            call.error ? `Error: ${call.error}` : undefined,
+            call.args ? `Malformed args: ${call.args}` : undefined,
+        ].filter(Boolean).join('\n')).join('\n\n');
+        return [
+            'N8N_INVALID_TOOL_CALL_RECOVERY',
+            'Your previous assistant message contained a malformed tool call and was removed before tool execution.',
+            details,
+            '',
+            'Repair instructions:',
+            '- Continue the same user task.',
+            '- Emit exactly one valid tool call or a final answer.',
+            '- Do not stop after this repair message.',
+            '- For the execute tool, pass exactly one JSON object with a command string: {"command":"..."}',
+            '- Do not pass a separate path field to execute. If a working directory matters, include it inside the shell command, for example: cd /absolute/path && node ...',
+            '- Do not concatenate multiple JSON objects in a tool call.',
+        ].filter(Boolean).join('\n');
     }
 
     private buildStaticSystemPrompt(workspaceRoot?: string): string {
