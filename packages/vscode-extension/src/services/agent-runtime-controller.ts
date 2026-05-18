@@ -1293,7 +1293,9 @@ export class AgentRuntimeController implements vscode.Disposable {
 
         await this.throwIfAborted(signal);
         const finalOutput = await finalOutputPromise;
-        const finalResponse = responseText || this.extractAssistantTextFromAgentOutput(finalOutput);
+        const finalResponse = responseText
+            || this.extractAssistantTextFromAgentOutput(finalOutput)
+            || this.buildToolOnlyCompletionResponse(entries);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
@@ -1308,6 +1310,36 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: fileModificationDetected };
     }
 
+    private buildToolOnlyCompletionResponse(entries: AgentTimelineEntry[]): string {
+        const latestOperation = [...entries].reverse().find((entry): entry is Extract<AgentTimelineEntry, { kind: 'operation' }> => entry.kind === 'operation' && entry.status === 'done');
+        if (!latestOperation) {
+            return 'The agent completed without producing a final message.';
+        }
+        const url = this.extractJsonStringField(latestOperation.body, 'url');
+        const workflowName = this.extractJsonStringField(latestOperation.body, 'workflowName');
+        if (url && workflowName) {
+            return `Done. ${workflowName} is ready: ${url}`;
+        }
+        if (url) {
+            return `Done: ${url}`;
+        }
+        return 'Done.';
+    }
+
+    private extractJsonStringField(value: unknown, field: string): string | undefined {
+        if (typeof value !== 'string' || !value.trim()) return undefined;
+        try {
+            const parsed = JSON.parse(value);
+            if (this.isRecord(parsed) && typeof parsed[field] === 'string') {
+                return parsed[field];
+            }
+        } catch {
+            // Command output may append stderr after a JSON payload.
+        }
+        const pattern = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`);
+        return pattern.exec(value)?.[1];
+    }
+
     private async consumeDeepAgentV3MessagesProjection(
         messages: AsyncIterable<any>,
         contextWindowTokens: number,
@@ -1317,10 +1349,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         let responseText = '';
         for await (const message of messages) {
             await this.throwIfAborted(signal);
-            const namespace = Array.isArray(message?.namespace) ? message.namespace : [];
-            if (namespace.length > 0) {
-                continue;
-            }
             responseText += await this.consumeDeepAgentV3MessageHandle(message, contextWindowTokens, emitStreamEvent, signal);
         }
         return responseText;
