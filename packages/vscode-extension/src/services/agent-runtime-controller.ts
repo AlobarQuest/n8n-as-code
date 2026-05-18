@@ -1223,6 +1223,11 @@ export class AgentRuntimeController implements vscode.Disposable {
 
         let entries = [...initialEntries];
 
+        if (typeof (agent as any).streamEvents === 'function' && !this.shouldUseDeepAgentsV3Stream()) {
+            const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
+            return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+        }
+
         if (typeof (agent as any).streamEvents === 'function') {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 let v3Run: any;
@@ -1258,6 +1263,10 @@ export class AgentRuntimeController implements vscode.Disposable {
         entries = this.applyStreamEvent(entries, finalEvent);
         await postMessage({ type: 'agent.streamEvent', event: finalEvent });
         return { entries, workflowChanged: false };
+    }
+
+    private shouldUseDeepAgentsV3Stream(): boolean {
+        return process.env.N8N_AGENT_DEEPAGENTS_V3 === '1';
     }
 
     private isDeepAgentV3Run(value: unknown): boolean {
