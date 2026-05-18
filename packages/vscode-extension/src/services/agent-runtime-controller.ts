@@ -2004,6 +2004,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             const existingEntry = existingIndex >= 0 && next[existingIndex]?.kind === 'operation'
                 ? next[existingIndex] as Extract<AgentTimelineEntry, { kind: 'operation' }>
                 : undefined;
+            const shouldPreserveOperationSummary = ['shell', 'file-read', 'file-write', 'todo'].includes(event.category);
             const operationEntry: AgentTimelineEntry = {
                 kind: 'operation',
                 id: event.operationId || existingEntry?.id || randomUUID(),
@@ -2011,11 +2012,11 @@ export class AgentRuntimeController implements vscode.Disposable {
                 title: event.label,
                 category: event.category,
                 status: event.status,
-                body: event.body || existingEntry?.body,
-                summary: event.category === 'shell' && existingEntry?.summary ? existingEntry.summary : event.summary,
+                body: event.category === 'todo' && existingEntry?.body ? existingEntry.body : event.body || existingEntry?.body,
+                summary: shouldPreserveOperationSummary && existingEntry?.summary ? existingEntry.summary : event.summary,
                 startedAt: event.startedAt,
                 endedAt: event.endedAt,
-                detail: event.category === 'shell' && existingEntry?.summary ? existingEntry.summary : event.summary,
+                detail: shouldPreserveOperationSummary && existingEntry?.summary ? existingEntry.summary : event.summary,
             };
             if (existingIndex >= 0) {
                 next[existingIndex] = operationEntry;
@@ -2679,13 +2680,15 @@ export class AgentRuntimeController implements vscode.Disposable {
             if (this.shouldShowToolOperation(toolName)) {
                 const category = this.categorizeTool(toolName);
                 const command = category === 'shell' ? this.extractCommandFromToolPayload(event?.data?.input) : undefined;
+                const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(event?.data?.input) : undefined;
+                const todoSummary = category === 'todo' ? this.extractTodoSummary(event?.data?.input) : undefined;
                 await callbacks.onOperation({
                     operationId: this.getStreamOperationId(event, toolName),
                     label: this.formatToolLabel(toolName),
                     category,
                     status: 'running',
-                    body: command ? `$ ${command}` : this.stringifyToolPayload(event?.data?.input),
-                    summary: command ? `$ ${command}` : undefined,
+                    body: category === 'todo' ? this.stringifyToolPayload(event?.data?.input) : command ? `$ ${command}` : this.stringifyToolPayload(event?.data?.input),
+                    summary: command ? `$ ${command}` : filePath || todoSummary,
                     startedAt: Date.now(),
                 });
             }
@@ -2761,6 +2764,7 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     private categorizeTool(toolName: string): string {
         const normalized = toolName.toLowerCase();
+        if (normalized.includes('todo')) return 'todo';
         if (normalized.includes('write') || normalized.includes('edit') || normalized.includes('delete') || normalized.includes('move')) return 'file-write';
         if (normalized.includes('read')) return 'file-read';
         if (normalized.includes('shell') || normalized.includes('execute')) return 'shell';
@@ -2806,6 +2810,94 @@ export class AgentRuntimeController implements vscode.Disposable {
                 }
             }
             return undefined;
+        };
+        return visit(value);
+    }
+
+    private extractFilePathFromToolPayload(value: unknown): string | undefined {
+        const visited = new Set<unknown>();
+        const visit = (candidate: unknown): string | undefined => {
+            if (candidate === undefined || candidate === null || visited.has(candidate)) return undefined;
+            if (typeof candidate === 'string') {
+                const trimmed = candidate.trim();
+                if (!trimmed) return undefined;
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                    try {
+                        return visit(JSON.parse(trimmed));
+                    } catch {
+                        return undefined;
+                    }
+                }
+                return undefined;
+            }
+            if (Array.isArray(candidate)) {
+                for (const item of candidate) {
+                    const filePath = visit(item);
+                    if (filePath) return filePath;
+                }
+                return undefined;
+            }
+            if (typeof candidate === 'object') {
+                visited.add(candidate);
+                const record = candidate as Record<string, unknown>;
+                for (const key of ['file_path', 'filePath', 'path']) {
+                    if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim();
+                }
+                for (const key of ['input', 'args', 'kwargs']) {
+                    const filePath = visit(record[key]);
+                    if (filePath) return filePath;
+                }
+            }
+            return undefined;
+        };
+        return visit(value);
+    }
+
+    private extractTodoSummary(value: unknown): string | undefined {
+        const todos = this.extractTodosFromPayload(value);
+        if (!todos.length) return undefined;
+        const counts = todos.reduce<Record<string, number>>((acc, todo) => {
+            const status = String(todo.status || 'pending');
+            acc[status] = (acc[status] || 0) + 1;
+            return acc;
+        }, {});
+        return [
+            `${todos.length} todo${todos.length === 1 ? '' : 's'}`,
+            counts.in_progress ? `${counts.in_progress} in progress` : undefined,
+            counts.pending ? `${counts.pending} pending` : undefined,
+            counts.completed ? `${counts.completed} completed` : undefined,
+        ].filter(Boolean).join(' · ');
+    }
+
+    private extractTodosFromPayload(value: unknown): Array<{ content?: unknown; status?: unknown }> {
+        const visited = new Set<unknown>();
+        const visit = (candidate: unknown): Array<{ content?: unknown; status?: unknown }> => {
+            if (candidate === undefined || candidate === null || visited.has(candidate)) return [];
+            if (typeof candidate === 'string') {
+                const trimmed = candidate.trim();
+                if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return [];
+                try {
+                    return visit(JSON.parse(trimmed));
+                } catch {
+                    return [];
+                }
+            }
+            if (Array.isArray(candidate)) {
+                if (candidate.every((item) => item && typeof item === 'object' && 'content' in item)) {
+                    return candidate as Array<{ content?: unknown; status?: unknown }>;
+                }
+                return candidate.flatMap((item) => visit(item));
+            }
+            if (typeof candidate === 'object') {
+                visited.add(candidate);
+                const record = candidate as Record<string, unknown>;
+                if (Array.isArray(record.todos)) return visit(record.todos);
+                for (const key of ['update', 'input', 'args', 'kwargs']) {
+                    const todos = visit(record[key]);
+                    if (todos.length) return todos;
+                }
+            }
+            return [];
         };
         return visit(value);
     }

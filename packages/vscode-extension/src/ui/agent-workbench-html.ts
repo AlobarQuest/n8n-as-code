@@ -58,6 +58,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const agentOpIcon = lucideIcon('<path d="M12 3 4 7v5c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V7l-8-4Z"/><path d="M9.5 12.5 11 14l3.5-3.5"/>');
     const phaseOpIcon = lucideIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>');
     const thinkingOpIcon = lucideIcon('<path d="M9.5 9a3 3 0 1 1 5 2.2c-.8.7-1.5 1.2-1.5 2.3"/><path d="M12 17h.01"/><path d="M7 4.8A9 9 0 1 0 17 4.8"/>');
+    const todoOpIcon = lucideIcon('<path d="M9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>');
     const statusRunningIcon = lucideIcon('<path d="M21 12a9 9 0 1 1-6.22-8.56"/><path d="M21 3v6h-6"/>');
     const statusDoneIcon = lucideIcon('<path d="M20 6 9 17l-5-5"/>');
     const statusErrorIcon = lucideIcon('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>');
@@ -560,8 +561,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             gap: 6px;
             margin-top: 2px;
         }
-        .operation-command,
-        .operation-result {
+        .operation-row {
             display: grid;
             grid-template-columns: 68px minmax(0, 1fr);
             gap: 8px;
@@ -574,14 +574,26 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 11px;
             text-transform: uppercase;
         }
-        .operation-command code,
-        .operation-result span {
+        .operation-value {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .operation-command code {
+        .operation-code {
             font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
+        }
+        .todo-list {
+            display: grid;
+            gap: 4px;
+        }
+        .todo-line {
+            display: grid;
+            grid-template-columns: 86px minmax(0, 1fr);
+            gap: 8px;
+        }
+        .todo-status {
+            color: var(--muted);
+            text-transform: capitalize;
         }
         .composer {
             display: grid;
@@ -1106,7 +1118,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             tool: ${JSON.stringify(toolOpIcon)},
             agent: ${JSON.stringify(agentOpIcon)},
             phase: ${JSON.stringify(phaseOpIcon)},
-            thinking: ${JSON.stringify(thinkingOpIcon)}
+            thinking: ${JSON.stringify(thinkingOpIcon)},
+            todo: ${JSON.stringify(todoOpIcon)}
         };
 
         const STATUS_ICONS = {
@@ -1826,13 +1839,21 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         }
 
         function formatOperationCompactHtml(entry) {
+            if (entry.category === 'todo') return formatTodoCompactHtml(entry);
             const command = getOperationCommand(entry);
+            const filePath = getOperationFilePath(entry);
             const result = formatOperationResultPreview(entry, command);
-            if (!command && !result) return '';
+            const fileLabel = isPlanFileOperation(entry, filePath) ? 'Plan' : 'File';
+            if (!command && !filePath && !result) return '';
             return '<div class="operation-compact">' +
-                (command ? '<div class="operation-command"><span class="operation-label">Command</span><code>' + escapeHtml(command) + '</code></div>' : '') +
-                (result ? '<div class="operation-result"><span class="operation-label">Output</span><span>' + escapeHtml(result) + '</span></div>' : '') +
+                (command ? operationRowHtml('Command', command, true) : '') +
+                (filePath ? operationRowHtml(fileLabel, filePath, true) : '') +
+                (result ? operationRowHtml(entry.category === 'file-read' ? 'Preview' : 'Output', result, false) : '') +
                 '</div>';
+        }
+
+        function operationRowHtml(label, value, code) {
+            return '<div class="operation-row"><span class="operation-label">' + escapeHtml(label) + '</span><' + (code ? 'code' : 'span') + ' class="operation-value' + (code ? ' operation-code' : '') + '">' + escapeHtml(value) + '</' + (code ? 'code' : 'span') + '></div>';
         }
 
         function getOperationCommand(entry) {
@@ -1842,6 +1863,59 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 if (text.startsWith('$ ')) return text.slice(2).trim();
             }
             return '';
+        }
+
+        function getOperationFilePath(entry) {
+            if (entry.category !== 'file-read' && entry.category !== 'file-write') return '';
+            for (const value of [entry.summary, entry.detail, entry.body, entry.title]) {
+                const parsed = extractFilePathFromValue(value);
+                if (parsed) return parsed;
+            }
+            return '';
+        }
+
+        function extractFilePathFromValue(value) {
+            const seen = new Set();
+            function visit(candidate) {
+                if (candidate == null) return '';
+                if (typeof candidate === 'string') {
+                    const trimmed = candidate.trim();
+                    if (!trimmed) return '';
+                    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && !seen.has(trimmed)) {
+                        seen.add(trimmed);
+                        try { return visit(JSON.parse(trimmed)); } catch (e) { /* fall through */ }
+                    }
+                    const quoted = trimmed.match(/['"]([^'"]+\\/[^'"]+)['"]/);
+                    if (quoted) return quoted[1];
+                    const afterVerb = trimmed.match(/^(?:Read|Write|Edit)\\s+(.+)$/i);
+                    if (afterVerb && afterVerb[1].includes('/')) return afterVerb[1].trim();
+                    if (trimmed.startsWith('/') && !trimmed.includes('\\n')) return trimmed;
+                    return '';
+                }
+                if (Array.isArray(candidate)) {
+                    for (const item of candidate) {
+                        const filePath = visit(item);
+                        if (filePath) return filePath;
+                    }
+                    return '';
+                }
+                if (typeof candidate === 'object') {
+                    for (const key of ['file_path', 'filePath', 'path']) {
+                        if (typeof candidate[key] === 'string' && candidate[key].trim()) return candidate[key].trim();
+                    }
+                    for (const key of ['input', 'args', 'kwargs', 'update']) {
+                        const filePath = visit(candidate[key]);
+                        if (filePath) return filePath;
+                    }
+                }
+                return '';
+            }
+            return visit(value);
+        }
+
+        function isPlanFileOperation(entry, filePath) {
+            if (!filePath || !/\\.md$/i.test(filePath)) return false;
+            return /plan|planning|spec|proposal|implementation/i.test(filePath + ' ' + (entry.title || '') + ' ' + (entry.summary || ''));
         }
 
         function formatOperationResultPreview(entry, command) {
@@ -1855,9 +1929,68 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         }
 
         function formatOperationDetailsBody(entry) {
+            if (entry.category === 'todo') {
+                const todoText = formatTodosText(extractTodosFromValue(entry.body || entry.summary || entry.detail));
+                if (todoText) return todoText;
+            }
             const raw = entry.body || entry.summary || '';
             const extracted = extractReadableToolText(raw);
             return extracted || raw;
+        }
+
+        function formatTodoCompactHtml(entry) {
+            const todos = extractTodosFromValue(entry.body || entry.summary || entry.detail);
+            if (!todos.length) {
+                const result = formatOperationResultPreview(entry, '');
+                return result ? '<div class="operation-compact">' + operationRowHtml('Todos', result, false) + '</div>' : '';
+            }
+            const counts = todos.reduce((acc, todo) => {
+                const status = String(todo.status || 'pending');
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
+            const active = todos.find((todo) => todo.status === 'in_progress') || todos.find((todo) => todo.status === 'pending') || todos[0];
+            const summary = [
+                todos.length + ' item' + (todos.length === 1 ? '' : 's'),
+                counts.in_progress ? counts.in_progress + ' in progress' : '',
+                counts.pending ? counts.pending + ' pending' : '',
+                counts.completed ? counts.completed + ' completed' : '',
+            ].filter(Boolean).join(' · ');
+            return '<div class="operation-compact">' +
+                operationRowHtml('Todos', summary, false) +
+                (active && active.content ? operationRowHtml(active.status === 'in_progress' ? 'Current' : 'Next', String(active.content), false) : '') +
+                '</div>';
+        }
+
+        function extractTodosFromValue(value) {
+            const seen = new Set();
+            function visit(candidate) {
+                if (candidate == null) return [];
+                if (typeof candidate === 'string') {
+                    const trimmed = candidate.trim();
+                    if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('[')) || seen.has(trimmed)) return [];
+                    seen.add(trimmed);
+                    try { return visit(JSON.parse(trimmed)); } catch (e) { return []; }
+                }
+                if (Array.isArray(candidate)) {
+                    if (candidate.every((item) => item && typeof item === 'object' && 'content' in item)) return candidate;
+                    return candidate.flatMap(visit);
+                }
+                if (typeof candidate === 'object') {
+                    if (Array.isArray(candidate.todos)) return visit(candidate.todos);
+                    for (const key of ['update', 'input', 'args', 'kwargs']) {
+                        const todos = visit(candidate[key]);
+                        if (todos.length) return todos;
+                    }
+                }
+                return [];
+            }
+            return visit(value);
+        }
+
+        function formatTodosText(todos) {
+            if (!todos.length) return '';
+            return todos.map((todo) => '[' + String(todo.status || 'pending').replace(/_/g, ' ') + '] ' + String(todo.content || '')).join('\\n');
         }
 
         function truncateCompactText(value) {
