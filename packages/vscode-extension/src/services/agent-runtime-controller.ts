@@ -1862,6 +1862,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             'Your DeepAgents backend working directory is the VS Code workspace root. Treat all relative filesystem tool paths as relative to that home directory.',
             'Use tools only when useful. For workflow-specific questions, use the inline workflow and node context supplied with each user turn as authoritative.',
             'Do not claim to push workflows, provision credentials, or change n8n runtime state unless a tool explicitly performs that action successfully.',
+            'For workflow creation, editing, validation, synchronization, presentation, or any request that will take more than one tool call, use write_todos early. Keep exactly one item in_progress, update the list as work advances, and mark all items completed, blocked, or cancelled before the final answer.',
             'When using the execute tool, pass exactly one argument object with a command string: {"command":"..."}. Never pass a separate path field, and never concatenate multiple JSON objects.',
             workspaceRoot ? `Workspace root: ${workspaceRoot}` : undefined,
         ].filter(Boolean).join('\n');
