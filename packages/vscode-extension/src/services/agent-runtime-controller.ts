@@ -1274,6 +1274,10 @@ export class AgentRuntimeController implements vscode.Disposable {
         let fileModificationDetected = false;
         const activeMessageRoles = new Map<string, string>();
         const activeToolNames = new Map<string, string>();
+        const finalOutputPromise = Promise.resolve(run.output).catch((error: unknown) => {
+            this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 final output unavailable: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+        });
         const syncEntries = () => {
             if (!input.sessionId) return;
             this.writeSessionEntries(service, input.sessionId, entries);
@@ -1297,10 +1301,12 @@ export class AgentRuntimeController implements vscode.Disposable {
         }
 
         await this.throwIfAborted(signal);
+        const finalOutput = await finalOutputPromise;
+        const finalResponse = accumulator.responseText || this.extractAssistantTextFromAgentOutput(finalOutput);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
-            response: accumulator.responseText,
+            response: finalResponse,
             finalState: run.interrupted ? 'interrupted' : 'done',
         };
         await emitStreamEvent(finalEvent);
@@ -1918,6 +1924,68 @@ export class AgentRuntimeController implements vscode.Disposable {
             }).join(''));
         }
         return 'The agent completed without producing text.';
+    }
+
+    private extractAssistantTextFromAgentOutput(result: unknown): string {
+        if (!this.isRecord(result)) return '';
+        const messages = Array.isArray(result.messages) ? result.messages : [];
+        for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+            const message = messages[idx];
+            if (!this.isAssistantMessage(message)) continue;
+            const text = this.extractMessageTextContent(this.isRecord(message) ? message.content : undefined);
+            if (text.trim()) return this.sanitizeAssistantText(text);
+        }
+        return '';
+    }
+
+    private isAssistantMessage(value: unknown): boolean {
+        if (!this.isRecord(value)) return false;
+        const messageType = this.getMessageType(value);
+        if (messageType === 'tool' || messageType === 'human' || messageType === 'system') return false;
+        if (messageType === 'ai' || messageType === 'assistant') return true;
+        return false;
+    }
+
+    private getMessageType(value: Record<string, unknown>): string | undefined {
+        const getter = value._getType;
+        if (typeof getter === 'function') {
+            try {
+                const type = getter.call(value);
+                if (typeof type === 'string') return type.toLowerCase();
+            } catch {
+                // Fall through to structural checks.
+            }
+        }
+        for (const key of ['type', 'role']) {
+            const direct = value[key];
+            if (typeof direct === 'string') return direct.toLowerCase();
+            const kwargs = this.isRecord(value.kwargs) ? value.kwargs[key] : undefined;
+            if (typeof kwargs === 'string') return kwargs.toLowerCase();
+            const lcKwargs = this.isRecord(value.lc_kwargs) ? value.lc_kwargs[key] : undefined;
+            if (typeof lcKwargs === 'string') return lcKwargs.toLowerCase();
+        }
+        const constructorName = typeof value.constructor?.name === 'string' ? value.constructor.name.toLowerCase() : '';
+        if (constructorName.includes('toolmessage')) return 'tool';
+        if (constructorName.includes('humanmessage')) return 'human';
+        if (constructorName.includes('systemmessage')) return 'system';
+        if (constructorName.includes('aimessage')) return 'ai';
+        const lcId = Array.isArray(value.lc_id) ? value.lc_id.map(String).join('/').toLowerCase() : '';
+        if (lcId.includes('toolmessage')) return 'tool';
+        if (lcId.includes('humanmessage')) return 'human';
+        if (lcId.includes('systemmessage')) return 'system';
+        if (lcId.includes('aimessage')) return 'ai';
+        if ('tool_call_id' in value || 'toolCallId' in value) return 'tool';
+        return undefined;
+    }
+
+    private extractMessageTextContent(value: unknown): string {
+        if (typeof value === 'string') return value;
+        if (!Array.isArray(value)) return '';
+        return value.map((part) => {
+            if (typeof part === 'string') return part;
+            if (this.isRecord(part) && typeof part.text === 'string') return part.text;
+            return '';
+        }).join('');
     }
 
     private sanitizeAssistantText(value: string): string {
