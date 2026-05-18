@@ -1214,7 +1214,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         const sessions = await this.getSessionRuntime();
         sessions.service.setCheckpointer(handle.checkpointer);
         const agent = handle.agent;
-        const messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
+        let messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
         const contextWindowTokens = await this.resolveContextWindow(providerConfig.provider, providerConfig.model, providerConfig.apiKey, providerConfig.baseUrl);
         const config = {
             ...sessions.service.buildSessionConfig(input.sessionId || ''),
@@ -1224,18 +1224,27 @@ export class AgentRuntimeController implements vscode.Disposable {
         let entries = [...initialEntries];
 
         if (typeof (agent as any).streamEvents === 'function') {
-            let v3Run: any;
-            try {
-                v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
-            } catch (error: any) {
-                this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
-            }
-            if (this.isDeepAgentV3Run(v3Run)) {
-                return await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
-            }
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                let v3Run: any;
+                try {
+                    v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
+                } catch (error: any) {
+                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
+                }
+                if (this.isDeepAgentV3Run(v3Run)) {
+                    const result = await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+                    entries = result.entries;
+                    if (result.repairPrompt && attempt === 0) {
+                        this.outputChannel.appendLine(`[n8n-agent-debug] retrying after invalid tool call sessionId=${input.sessionId || 'none'}`);
+                        messages = [{ role: 'user', content: result.repairPrompt }];
+                        continue;
+                    }
+                    return result;
+                }
 
-            const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
-            return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+                const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
+                return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+            }
         }
 
         const result = await (agent as any).invoke({ messages }, config);
@@ -1268,7 +1277,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         postMessage: AgentWorkbenchPostMessage,
         signal: AbortSignal,
         contextWindowTokens: number,
-    ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean }> {
+    ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean; repairPrompt?: string }> {
         const accumulator = this.createStreamAccumulator();
         let entries = [...initialEntries];
         let fileModificationDetected = false;
@@ -1303,6 +1312,14 @@ export class AgentRuntimeController implements vscode.Disposable {
         await this.throwIfAborted(signal);
         const finalOutput = await finalOutputPromise;
         const finalResponse = accumulator.responseText || this.extractAssistantTextFromAgentOutput(finalOutput);
+        const repairPrompt = finalResponse ? undefined : this.buildInvalidToolCallRepairPrompt(finalOutput);
+        if (repairPrompt) {
+            const notice = this.createSystemNotice('The model emitted an invalid tool call. Retrying once with corrected tool-call instructions.');
+            entries = [...entries, notice];
+            syncEntries();
+            await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: input.sessionId }) });
+            return { entries, workflowChanged: fileModificationDetected, repairPrompt };
+        }
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
@@ -1735,6 +1752,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             'Your DeepAgents backend working directory is the VS Code workspace root. Treat all relative filesystem tool paths as relative to that home directory.',
             'Use tools only when useful. For workflow-specific questions, use the inline workflow and node context supplied with each user turn as authoritative.',
             'Do not claim to push workflows, provision credentials, or change n8n runtime state unless a tool explicitly performs that action successfully.',
+            'When using the execute tool, pass exactly one argument object with a command string: {"command":"..."}. Never pass a separate path field, and never concatenate multiple JSON objects.',
             workspaceRoot ? `Workspace root: ${workspaceRoot}` : undefined,
         ].filter(Boolean).join('\n');
     }
@@ -1936,6 +1954,64 @@ export class AgentRuntimeController implements vscode.Disposable {
             if (text.trim()) return this.sanitizeAssistantText(text);
         }
         return '';
+    }
+
+    private buildInvalidToolCallRepairPrompt(result: unknown): string | undefined {
+        const invalidCalls = this.extractInvalidToolCallsFromAgentOutput(result);
+        if (!invalidCalls.length) return undefined;
+        const details = invalidCalls.map((call, index) => [
+            `${index + 1}. Tool: ${call.name || 'unknown'}`,
+            call.error ? `Error: ${call.error}` : undefined,
+            call.args ? `Malformed args: ${call.args}` : undefined,
+        ].filter(Boolean).join('\n')).join('\n\n');
+        return [
+            'Continue the same user task from the current workspace state.',
+            'Your previous response ended with an invalid tool call, so no tool was executed.',
+            details,
+            '',
+            'Repair instructions:',
+            '- Emit a valid tool call or a final answer; do not stop after an invalid tool call.',
+            '- For the execute tool, use exactly one JSON object with a single command string: {"command":"..."}',
+            '- Do not pass a separate path field to execute. If a working directory matters, include it inside the shell command, for example: cd /absolute/path && node ...',
+            '- Do not concatenate multiple JSON objects in a tool call.',
+        ].filter(Boolean).join('\n');
+    }
+
+    private extractInvalidToolCallsFromAgentOutput(result: unknown): Array<{ name?: string; args?: string; error?: string }> {
+        if (!this.isRecord(result)) return [];
+        const messages = Array.isArray(result.messages) ? result.messages : [];
+        for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+            const message = messages[idx];
+            if (!this.isAssistantMessage(message)) continue;
+            const calls = this.extractInvalidToolCallsFromMessage(message);
+            if (calls.length) return calls;
+        }
+        return [];
+    }
+
+    private extractInvalidToolCallsFromMessage(message: unknown): Array<{ name?: string; args?: string; error?: string }> {
+        const candidates: unknown[] = [];
+        const collect = (value: unknown) => {
+            if (!this.isRecord(value)) return;
+            for (const key of ['invalid_tool_calls', 'invalidToolCalls']) {
+                const direct = value[key];
+                if (Array.isArray(direct)) candidates.push(...direct);
+            }
+            for (const key of ['content', 'content_blocks']) {
+                const direct = value[key];
+                if (Array.isArray(direct)) candidates.push(...direct);
+            }
+            if (this.isRecord(value.kwargs)) collect(value.kwargs);
+            if (this.isRecord(value.lc_kwargs)) collect(value.lc_kwargs);
+        };
+        collect(message);
+        return candidates
+            .filter((candidate): candidate is Record<string, unknown> => this.isRecord(candidate) && candidate.type === 'invalid_tool_call')
+            .map((candidate) => ({
+                name: typeof candidate.name === 'string' ? candidate.name : undefined,
+                args: typeof candidate.args === 'string' ? candidate.args : this.stringifyToolPayload(candidate.args),
+                error: typeof candidate.error === 'string' ? candidate.error : undefined,
+            }));
     }
 
     private isAssistantMessage(value: unknown): boolean {
