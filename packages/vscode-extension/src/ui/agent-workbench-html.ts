@@ -555,6 +555,34 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
             font-size: 12px;
         }
+        .operation-compact {
+            display: grid;
+            gap: 6px;
+            margin-top: 2px;
+        }
+        .operation-command,
+        .operation-result {
+            display: grid;
+            grid-template-columns: 68px minmax(0, 1fr);
+            gap: 8px;
+            align-items: baseline;
+            min-width: 0;
+            font-size: 12px;
+        }
+        .operation-label {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .operation-command code,
+        .operation-result span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .operation-command code {
+            font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
+        }
         .composer {
             display: grid;
             gap: 6px;
@@ -1760,14 +1788,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 const statusLabel = entry.status || entry.tone || '';
                 const statusIcon = STATUS_ICONS[entry.status] || '';
                 const title = entry.title || 'Operation';
-                const compactSummary = formatOperationCompactSummary(entry);
+                const compactHtml = formatOperationCompactHtml(entry);
                 el.innerHTML = '<div class="entry-head">' +
                     '<div class="entry-title">' +
                     '<span class="entry-kind-icon" aria-hidden="true">' + icon + '</span>' +
                     '<span>' + escapeHtml(title) + '</span></div>' +
                     '<div class="entry-status' + escapeHtml(statusClass) + '" title="' + escapeHtml(statusLabel) + '" aria-label="' + escapeHtml(statusLabel) + '">' + statusIcon + '<span class="sr-only">' + escapeHtml(statusLabel) + '</span></div>' +
                     '</div>' +
-                    (compactSummary ? '<div>' + escapeHtml(compactSummary) + '</div>' : '');
+                    compactHtml;
                 if (entry.body || entry.summary) {
                     el.appendChild(createPersistentDetails(getEntryDetailKey(entry, index), 'Show details', formatOperationDetailsBody(entry)));
                 }
@@ -1797,8 +1825,29 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             return details;
         }
 
-        function formatOperationCompactSummary(entry) {
-            const raw = entry.detail || entry.summary || '';
+        function formatOperationCompactHtml(entry) {
+            const command = getOperationCommand(entry);
+            const result = formatOperationResultPreview(entry, command);
+            if (!command && !result) return '';
+            return '<div class="operation-compact">' +
+                (command ? '<div class="operation-command"><span class="operation-label">Command</span><code>' + escapeHtml(command) + '</code></div>' : '') +
+                (result ? '<div class="operation-result"><span class="operation-label">Output</span><span>' + escapeHtml(result) + '</span></div>' : '') +
+                '</div>';
+        }
+
+        function getOperationCommand(entry) {
+            if (entry.category !== 'shell') return '';
+            for (const value of [entry.summary, entry.detail, entry.body]) {
+                const text = String(value || '').trim();
+                if (text.startsWith('$ ')) return text.slice(2).trim();
+            }
+            return '';
+        }
+
+        function formatOperationResultPreview(entry, command) {
+            const raw = entry.category === 'shell'
+                ? (entry.body && String(entry.body).trim() !== ('$ ' + command) ? entry.body : '')
+                : (entry.detail || entry.summary || '');
             const extracted = extractReadableToolText(raw);
             if (extracted) return truncateCompactText(extracted);
             if (looksLikeStructuredPayload(raw)) return '';
@@ -2088,11 +2137,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                     id: event.operationId || (existing && existing.id) || crypto.randomUUID(),
                     tone: event.status === 'error' ? 'error' : event.status === 'done' ? 'success' : 'info',
                     title: event.label,
-                    detail: event.summary,
+                    detail: event.category === 'shell' && existing && existing.summary ? existing.summary : event.summary,
                     category: event.category,
                     status: event.status,
                     body: event.body || (existing && existing.body),
-                    summary: event.summary,
+                    summary: event.category === 'shell' && existing && existing.summary ? existing.summary : event.summary,
                     startedAt: event.startedAt,
                     endedAt: event.endedAt,
                 };
