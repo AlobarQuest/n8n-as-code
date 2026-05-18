@@ -1349,6 +1349,9 @@ export class AgentRuntimeController implements vscode.Disposable {
         let responseText = '';
         for await (const message of messages) {
             await this.throwIfAborted(signal);
+            if (message?.node !== 'model_request') {
+                continue;
+            }
             responseText += await this.consumeDeepAgentV3MessageHandle(message, contextWindowTokens, emitStreamEvent, signal);
         }
         return responseText;
