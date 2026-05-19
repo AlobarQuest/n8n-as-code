@@ -96,6 +96,29 @@ test('Agent Workbench HTML: stop is icon-only and updates optimistically', () =>
     assert.ok(html.includes("vscode.postMessage({ type: 'agent.stop' });"), 'Must still request runtime stop');
 });
 
+test('Agent Workbench HTML: final stream event releases composer immediately', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes("event.type === 'final'"), 'Must handle the final stream event');
+    assert.ok(html.includes("entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);\n                setRunning(false);"), 'Must unlock the composer as soon as the final response arrives');
+});
+
+test('Agent runtime: final response does not wait for post-run checkpoint work', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("await postMessage({ type: 'agent.status', status: 'idle' });\n                postedIdle = true;"), 'Must post idle before slower state refresh work on normal completion');
+    assert.ok(source.includes('saveAutoCheckpointAfterFileModificationInBackground'), 'Must keep auto-checkpoints off the response critical path');
+    assert.ok(!source.includes('await this.saveAutoCheckpointAfterFileModification(service, input, entries);'), 'Must not await auto-checkpoint after emitting the final response');
+});
+
 test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () => {
     const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({

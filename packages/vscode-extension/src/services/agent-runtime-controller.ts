@@ -1171,16 +1171,23 @@ export class AgentRuntimeController implements vscode.Disposable {
 
         let result: AgentRunResult = { workflowChanged: false };
         let queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
+        let postedIdle = false;
         try {
             const runResult = await this.runInitialAgentTurn(promptInput, entries, postMessage, abortController.signal);
             entries = runResult.entries;
+            this.writeSessionEntries(sessions.service, activeRecord.id, entries);
+            if (!this.queuedPrompt && this.activeRun?.abortController === abortController) {
+                this.activeRun = undefined;
+                await postMessage({ type: 'agent.status', status: 'idle' });
+                postedIdle = true;
+            }
             if (runResult.workflowChanged && !promptWorkflowContext) {
                 const inferredWorkflow = await this.inferWorkflowContextFromWorkspace(input.workspaceRoot);
                 if (inferredWorkflow) {
                     entries = this.withWorkflowContext(entries, inferredWorkflow);
+                    this.writeSessionEntries(sessions.service, activeRecord.id, entries);
                 }
             }
-            this.writeSessionEntries(sessions.service, activeRecord.id, entries);
             await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
             await postMessage({ type: 'agent.done' });
             result = { workflowChanged: runResult.workflowChanged };
@@ -1220,7 +1227,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             queuedPrompt = this.queuedPrompt;
             if (queuedPrompt) {
                 this.queuedPrompt = undefined;
-            } else {
+            } else if (!postedIdle) {
                 await postMessage({ type: 'agent.status', status: 'idle' });
             }
         }
@@ -1397,7 +1404,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         };
         await emitStreamEvent(finalEvent);
         if (fileModificationDetected) {
-            await this.saveAutoCheckpointAfterFileModification(service, input, entries);
+            this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
         }
         this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)}`);
         return { entries, workflowChanged: fileModificationDetected };
@@ -1744,10 +1751,20 @@ export class AgentRuntimeController implements vscode.Disposable {
         syncEntries();
         await postMessage({ type: 'agent.streamEvent', event: finalEvent });
         if (fileModificationDetected) {
-            await this.saveAutoCheckpointAfterFileModification(service, input, entries);
+            this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
         }
         this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v2 workflowChanged=${String(fileModificationDetected)}`);
         return { entries, workflowChanged: fileModificationDetected };
+    }
+
+    private saveAutoCheckpointAfterFileModificationInBackground(
+        service: SessionServiceHandle,
+        input: AgentPromptInput,
+        entries: AgentTimelineEntry[],
+    ): void {
+        void this.saveAutoCheckpointAfterFileModification(service, input, entries).catch((error: any) => {
+            this.outputChannel.appendLine(`[n8n-agent] Auto-checkpoint background task failed: ${error?.message || String(error)}`);
+        });
     }
 
     private async saveAutoCheckpointAfterFileModification(

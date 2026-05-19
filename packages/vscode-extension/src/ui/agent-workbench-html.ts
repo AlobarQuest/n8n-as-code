@@ -2576,6 +2576,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             } else if (event.type === 'final') {
                 entries = finalizePendingOperations(entries, 'done');
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
+                setRunning(false);
             } else if (event.type === 'operation') {
                 const idx = findMatchingPendingOperationIndex(entries, event.operationId, event.label, event.category);
                 const existing = idx >= 0 && entries[idx] && entries[idx].kind === 'operation' ? entries[idx] : null;
