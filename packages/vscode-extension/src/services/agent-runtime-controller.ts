@@ -508,7 +508,6 @@ class WorkbenchSessionService implements SessionServiceHandle {
                 thread_id: sessionId,
                 ...(checkpointId ? { checkpoint_id: checkpointId } : {}),
             },
-            version: 'v2',
         };
     }
 
@@ -1324,10 +1323,11 @@ export class AgentRuntimeController implements vscode.Disposable {
         let entries = [...initialEntries];
 
         if (typeof (agent as any).streamEvents === 'function') {
-            // The v3 DeepAgents run projections can remain open after visible text is complete,
-            // which keeps the Workbench in a running state. Use the linear v2 event stream here.
-            const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
-            return await this.raceAbort(this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens), signal);
+            const run = await this.raceAbort(Promise.resolve((agent as any).streamEvents({ messages }, { ...config, version: 'v3' })), signal);
+            if (!this.isDeepAgentV3Run(run)) {
+                throw new Error('DeepAgents v3 stream did not return a run stream.');
+            }
+            return await this.raceAbort(this.consumeDeepAgentV3Run(run, input, entries, sessions.service, postMessage, signal, contextWindowTokens), signal);
         }
 
         const result = await this.raceAbort(Promise.resolve((agent as any).invoke({ messages }, config)), signal);
@@ -1343,8 +1343,20 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: false };
     }
 
-    private async consumeDeepAgentV2Stream(
-        stream: AsyncIterable<any>,
+    private isDeepAgentV3Run(value: unknown): value is { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> } {
+        return Boolean(value
+            && typeof value === 'object'
+            && 'output' in Object(value));
+    }
+
+    private isAsyncIterable(value: unknown): value is AsyncIterable<any> {
+        return Boolean(value
+            && typeof value === 'object'
+            && Symbol.asyncIterator in Object(value));
+    }
+
+    private async consumeDeepAgentV3Run(
+        run: { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> },
         input: AgentPromptInput,
         initialEntries: AgentTimelineEntry[],
         service: SessionServiceHandle,
@@ -1355,78 +1367,62 @@ export class AgentRuntimeController implements vscode.Disposable {
         const accumulator = this.createStreamAccumulator();
         let entries = [...initialEntries];
         let fileModificationDetected = false;
+        let finalEmitted = false;
         const syncEntries = () => {
             if (!input.sessionId) return;
             this.writeSessionEntries(service, input.sessionId, entries);
         };
+        const emitStreamEvent = async (streamEvent: AgentStreamEvent) => {
+            if (finalEmitted && streamEvent.type !== 'final') return;
+            entries = this.applyStreamEvent(entries, streamEvent);
+            syncEntries();
+            await postMessage({ type: 'agent.streamEvent', event: streamEvent });
+            if (streamEvent.type === 'operation' && streamEvent.status === 'done' && streamEvent.category === 'file-write') {
+                fileModificationDetected = true;
+            }
+        };
 
-        for await (const event of stream) {
-            await this.throwIfAborted(signal);
-            await this.processDeepAgentStreamEvent(event, accumulator, {
+        void Promise.allSettled([
+            this.consumeDeepAgentV3MessageProjection(run, accumulator, {
+                signal,
                 contextWindowTokens,
-                onTextDelta: async (delta: string) => {
-                    entries = this.applyStreamEvent(entries, { type: 'text-delta', delta });
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: { type: 'text-delta', delta } });
-                },
-                onOperation: async (operation: any) => {
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'operation',
-                        operationId: String(operation.operationId || randomUUID()),
-                        label: String(operation.label || 'Operation'),
-                        category: String(operation.category || 'tool'),
-                        status: operation.status === 'error' ? 'error' : operation.status === 'done' ? 'done' : 'running',
-                        body: typeof operation.body === 'string' ? operation.body : undefined,
-                        summary: typeof operation.summary === 'string' ? operation.summary : undefined,
-                        startedAt: Number(operation.startedAt || Date.now()),
-                        endedAt: typeof operation.endedAt === 'number' ? operation.endedAt : undefined,
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                    if (streamEvent.status === 'done' && streamEvent.category === 'file-write') {
-                        fileModificationDetected = true;
-                    }
-                },
-                onCompaction: async (compaction: any) => {
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'compaction',
-                        summary: String(compaction.summary || 'Context compacted'),
-                        source: compaction.source === 'fallback' ? 'fallback' : 'llm',
-                        messagesCompacted: Number(compaction.messagesCompacted || 0),
-                        preservedRecentMessages: Number(compaction.preservedRecentMessages || 0),
-                        estimatedTokens: typeof compaction.estimatedTokens === 'number' ? compaction.estimatedTokens : undefined,
-                        thresholdTokens: typeof compaction.thresholdTokens === 'number' ? compaction.thresholdTokens : undefined,
-                        fallbackReason: typeof compaction.fallbackReason === 'string' ? compaction.fallbackReason : undefined,
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                },
-                onContextUsage: async (usage: any) => {
-                    if (usage?.source !== 'api') {
-                        return;
-                    }
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'context-usage',
-                        promptTokens: Number(usage.promptTokens || 0),
-                        completionTokens: Number(usage.completionTokens || 0),
-                        contextWindowTokens: Number(usage.contextWindowTokens || contextWindowTokens),
-                        fillPercent: Number(usage.fillPercent || 0),
-                        source: 'api',
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                },
-            });
-        }
+                onStreamEvent: emitStreamEvent,
+            }),
+            this.consumeDeepAgentV3ToolCallProjection(run, {
+                signal,
+                onStreamEvent: emitStreamEvent,
+            }),
+        ]).then((results) => {
+            for (const result of results) {
+                if (result.status === 'rejected' && !signal.aborted) {
+                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 projection consumer failed: ${result.reason?.message || String(result.reason)}`);
+                }
+            }
+        });
 
+        const finalOutput = await this.raceAbort(Promise.resolve(run.output), signal);
+
+        await this.throwIfAborted(signal);
+        if (accumulator.thinkingText) {
+            await emitStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId || `thinking:${randomUUID()}`,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
+        }
+        finalEmitted = true;
         const finalEvent: AgentStreamEvent = {
             type: 'final',
             sessionId: input.sessionId || '',
-            response: accumulator.responseText,
-            finalState: 'done',
+            response: this.extractAssistantTextFromAgentOutput(finalOutput) || accumulator.responseText || this.extractAgentText(finalOutput),
+            finalState: run.interrupted ? 'interrupted' : 'done',
         };
         entries = this.applyStreamEvent(entries, finalEvent);
         syncEntries();
@@ -1434,8 +1430,212 @@ export class AgentRuntimeController implements vscode.Disposable {
         if (fileModificationDetected) {
             this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
         }
-        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v2 workflowChanged=${String(fileModificationDetected)}`);
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)}`);
         return { entries, workflowChanged: fileModificationDetected };
+    }
+
+    private async consumeDeepAgentV3MessageProjection(
+        run: { messages?: AsyncIterable<any> },
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(run.messages)) return;
+        for await (const message of run.messages) {
+            await this.throwIfAborted(callbacks.signal);
+            await this.consumeDeepAgentV3Message(message, accumulator, callbacks);
+        }
+    }
+
+    private async consumeDeepAgentV3Message(
+        message: AsyncIterable<any>,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        const messageKey = `message:${randomUUID()}`;
+        for await (const event of message) {
+            await this.throwIfAborted(callbacks.signal);
+            await this.processDeepAgentV3MessageProjectionEvent(event, messageKey, accumulator, callbacks);
+        }
+    }
+
+    private async processDeepAgentV3MessageProjectionEvent(
+        event: any,
+        messageKey: string,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!event || typeof event !== 'object') return;
+        if (event.event === 'content-block-delta') {
+            const delta = event.delta;
+            if (delta?.type === 'reasoning-delta' && typeof delta.reasoning === 'string' && delta.reasoning) {
+                accumulator.thinkingText += delta.reasoning;
+                accumulator.thinkingOperationId ||= `thinking:${messageKey}`;
+                await callbacks.onStreamEvent({
+                    type: 'operation',
+                    operationId: accumulator.thinkingOperationId,
+                    label: 'Thinking',
+                    category: 'thinking',
+                    status: 'running',
+                    body: accumulator.thinkingText,
+                    startedAt: Date.now(),
+                });
+                return;
+            }
+            if (delta?.type === 'text-delta' && typeof delta.text === 'string' && delta.text) {
+                if (accumulator.thinkingText) {
+                    await callbacks.onStreamEvent({
+                        type: 'operation',
+                        operationId: accumulator.thinkingOperationId || `thinking:${messageKey}`,
+                        label: 'Thinking',
+                        category: 'thinking',
+                        status: 'done',
+                        body: accumulator.thinkingText,
+                        startedAt: Date.now(),
+                        endedAt: Date.now(),
+                    });
+                    accumulator.thinkingText = '';
+                    accumulator.thinkingOperationId = undefined;
+                }
+                accumulator.responseText += delta.text;
+                await callbacks.onStreamEvent({ type: 'text-delta', delta: delta.text });
+                return;
+            }
+        }
+        if (event.event === 'usage' || event.event === 'message-start' || event.event === 'message-finish') {
+            const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
+            if (usageEvent) await callbacks.onStreamEvent(usageEvent);
+        }
+        if (event.event === 'message-finish' && accumulator.thinkingText) {
+            await callbacks.onStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId || `thinking:${messageKey}`,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
+        }
+    }
+
+    private async consumeDeepAgentV3ToolCallProjection(
+        run: { toolCalls?: AsyncIterable<any> },
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(run.toolCalls)) return;
+        const completions: Promise<void>[] = [];
+        for await (const toolCall of run.toolCalls) {
+            await this.throwIfAborted(callbacks.signal);
+            const completion = this.consumeDeepAgentV3ToolCall(toolCall, callbacks).catch((error: any) => {
+                if (!callbacks.signal.aborted) {
+                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 tool-call projection failed: ${error?.message || String(error)}`);
+                }
+            });
+            completions.push(completion);
+        }
+        await Promise.allSettled(completions);
+    }
+
+    private async consumeDeepAgentV3ToolCall(
+        toolCall: any,
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        const toolName = String(toolCall?.name || 'tool');
+        if (!this.shouldShowToolOperation(toolName)) return;
+        const toolCallId = String(toolCall?.callId || randomUUID());
+        const operationId = `${toolName}:${toolCallId}`;
+        const startedAt = Date.now();
+        const category = this.categorizeTool(toolName);
+        const command = category === 'shell' ? this.extractCommandFromToolPayload(toolCall?.input) : undefined;
+        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(toolCall?.input) : undefined;
+        const todoSummary = category === 'todo' ? this.extractTodoSummary(toolCall?.input) : undefined;
+        await callbacks.onStreamEvent({
+            type: 'operation',
+            operationId,
+            label: this.formatToolLabel(toolName),
+            category,
+            status: 'running',
+            body: category === 'todo' ? this.stringifyToolPayload(toolCall?.input) : command ? `$ ${command}` : this.stringifyToolPayload(toolCall?.input),
+            summary: command ? `$ ${command}` : filePath || todoSummary,
+            startedAt,
+        });
+
+        let status = await Promise.resolve(toolCall?.status).catch(() => 'error');
+        let output: unknown;
+        let errorMessage: string | undefined;
+        if (status === 'error') {
+            errorMessage = await Promise.resolve(toolCall?.error).catch((error: any) => error?.message || String(error));
+            output = errorMessage || 'Tool failed';
+        } else {
+            output = await Promise.resolve(toolCall?.output).catch((error: any) => {
+                status = 'error';
+                errorMessage = error?.message || String(error);
+                return errorMessage;
+            });
+        }
+
+        await this.throwIfAborted(callbacks.signal);
+        const outputText = status === 'error' ? String(errorMessage || output || 'Tool failed') : this.stringifyToolOutput(output);
+        await callbacks.onStreamEvent({
+            type: 'operation',
+            operationId,
+            label: this.formatToolLabel(toolName),
+            category,
+            status: status === 'error' ? 'error' : 'done',
+            summary: this.truncateOperationDetail(outputText),
+            body: outputText,
+            startedAt,
+            endedAt: Date.now(),
+        });
+        const compaction = this.extractCompactionSummary(output);
+        if (compaction) {
+            await callbacks.onStreamEvent({
+                type: 'compaction',
+                summary: compaction.summary,
+                source: compaction.source,
+                messagesCompacted: compaction.messagesCompacted,
+                preservedRecentMessages: compaction.preservedRecentMessages,
+                estimatedTokens: compaction.estimatedTokens,
+                thresholdTokens: compaction.thresholdTokens,
+                fallbackReason: compaction.fallbackReason,
+            });
+        }
+    }
+
+    private contextUsageEventFromUsage(usage: any, contextWindowTokens: number): AgentContextUsageEvent | undefined {
+        const promptTokens = Number(usage?.input_tokens ?? usage?.promptTokens ?? usage?.prompt_tokens ?? 0);
+        const completionTokens = Number(usage?.output_tokens ?? usage?.completionTokens ?? usage?.completion_tokens ?? 0);
+        if (!promptTokens && !completionTokens) return undefined;
+        const fillPercent = contextWindowTokens > 0 ? Math.min(100, Math.round((promptTokens / contextWindowTokens) * 100)) : 0;
+        return {
+            type: 'context-usage',
+            promptTokens,
+            completionTokens,
+            contextWindowTokens,
+            fillPercent,
+            source: 'api',
+        };
     }
 
     private saveAutoCheckpointAfterFileModificationInBackground(
@@ -3075,140 +3275,6 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     private createStreamAccumulator(): { responseText: string; thinkingText: string; thinkingOperationId?: string } {
         return { responseText: '', thinkingText: '' };
-    }
-
-    private async processDeepAgentStreamEvent(
-        event: any,
-        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
-        callbacks: {
-            contextWindowTokens: number;
-            onTextDelta: (delta: string) => Promise<void>;
-            onOperation: (operation: any) => Promise<void>;
-            onCompaction: (compaction: any) => Promise<void>;
-            onContextUsage: (usage: any) => Promise<void>;
-        },
-    ): Promise<void> {
-        const eventName = String(event?.event || '');
-        if (eventName === 'on_chat_model_stream') {
-            const chunk = event?.data?.chunk;
-            const { textDelta, thinkingDelta } = this.extractStreamDeltas(chunk);
-            await this.emitContextUsageFromChunk(event, chunk, callbacks.contextWindowTokens, callbacks.onContextUsage);
-            if (thinkingDelta) {
-                accumulator.thinkingText += thinkingDelta;
-                accumulator.thinkingOperationId ||= this.getStreamOperationId(event, 'thinking');
-                await callbacks.onOperation({
-                    operationId: accumulator.thinkingOperationId,
-                    label: 'Thinking',
-                    category: 'thinking',
-                    status: 'running',
-                    body: accumulator.thinkingText,
-                    startedAt: Date.now(),
-                });
-            }
-            if (textDelta) {
-                if (accumulator.thinkingText) {
-                    await callbacks.onOperation({
-                        operationId: accumulator.thinkingOperationId || this.getStreamOperationId(event, 'thinking'),
-                        label: 'Thinking',
-                        category: 'thinking',
-                        status: 'done',
-                        body: accumulator.thinkingText,
-                        startedAt: Date.now(),
-                        endedAt: Date.now(),
-                    });
-                    accumulator.thinkingText = '';
-                    accumulator.thinkingOperationId = undefined;
-                }
-                accumulator.responseText += textDelta;
-                await callbacks.onTextDelta(textDelta);
-            }
-            return;
-        }
-        if (eventName === 'on_chat_model_end') {
-            await this.emitContextUsageFromChunk(event, event?.data?.output || event?.data, callbacks.contextWindowTokens, callbacks.onContextUsage);
-            return;
-        }
-        if (eventName === 'on_tool_start') {
-            const toolName = String(event?.name || 'tool');
-            if (this.shouldShowToolOperation(toolName)) {
-                const category = this.categorizeTool(toolName);
-                const command = category === 'shell' ? this.extractCommandFromToolPayload(event?.data?.input) : undefined;
-                const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(event?.data?.input) : undefined;
-                const todoSummary = category === 'todo' ? this.extractTodoSummary(event?.data?.input) : undefined;
-                await callbacks.onOperation({
-                    operationId: this.getStreamOperationId(event, toolName),
-                    label: this.formatToolLabel(toolName),
-                    category,
-                    status: 'running',
-                    body: category === 'todo' ? this.stringifyToolPayload(event?.data?.input) : command ? `$ ${command}` : this.stringifyToolPayload(event?.data?.input),
-                    summary: command ? `$ ${command}` : filePath || todoSummary,
-                    startedAt: Date.now(),
-                });
-            }
-            return;
-        }
-        if (eventName === 'on_tool_end') {
-            const toolName = String(event?.name || 'tool');
-            if (this.shouldShowToolOperation(toolName)) {
-                const output = this.stringifyToolOutput(event?.data?.output);
-                await callbacks.onOperation({
-                    operationId: this.getStreamOperationId(event, toolName),
-                    label: this.formatToolLabel(toolName),
-                    category: this.categorizeTool(toolName),
-                    status: event?.data?.output?.error ? 'error' : 'done',
-                    summary: this.truncateOperationDetail(output),
-                    body: output,
-                    startedAt: Date.now(),
-                    endedAt: Date.now(),
-                });
-            }
-            const compaction = this.extractCompactionSummary(event?.data?.output || event?.data?.chunk);
-            if (compaction) await callbacks.onCompaction(compaction);
-        }
-    }
-
-    private extractStreamDeltas(chunk: any): { textDelta?: string; thinkingDelta?: string } {
-        const content = chunk?.content;
-        let textDelta = typeof content === 'string' ? content : undefined;
-        if (!textDelta && Array.isArray(content)) {
-            textDelta = content.map((part) => {
-                if (typeof part === 'string') return part;
-                if (typeof part?.text === 'string') return part.text;
-                if (typeof part?.textDelta === 'string') return part.textDelta;
-                return '';
-            }).join('');
-        }
-        const thinkingDelta = typeof chunk?.additional_kwargs?.reasoning_content === 'string'
-            ? chunk.additional_kwargs.reasoning_content
-            : typeof chunk?.additional_kwargs?.reasoning === 'string'
-                ? chunk.additional_kwargs.reasoning
-                : undefined;
-        return { textDelta: textDelta || undefined, thinkingDelta };
-    }
-
-    private async emitContextUsageFromChunk(
-        event: any,
-        payload: any,
-        contextWindowTokens: number,
-        onContextUsage: (usage: any) => Promise<void>,
-    ): Promise<void> {
-        const usage = payload?.usage_metadata || payload?.usage || payload?.response_metadata?.tokenUsage;
-        const promptTokens = Number(usage?.input_tokens ?? usage?.promptTokens ?? usage?.prompt_tokens ?? 0);
-        const completionTokens = Number(usage?.output_tokens ?? usage?.completionTokens ?? usage?.completion_tokens ?? 0);
-        if (!promptTokens && !completionTokens) return;
-        const fillPercent = contextWindowTokens > 0 ? Math.min(100, Math.round((promptTokens / contextWindowTokens) * 100)) : 0;
-        await onContextUsage({
-            promptTokens,
-            completionTokens,
-            contextWindowTokens,
-            fillPercent,
-            source: 'api',
-            runId: event?.run_id,
-        });
-    }
-
-    private getStreamOperationId(event: any, toolName: string): string {
-        return `${toolName}:${String(event?.run_id || event?.id || 'unknown')}`;
     }
 
     private shouldShowToolOperation(toolName: string): boolean {

@@ -133,14 +133,21 @@ test('Agent runtime: final response does not wait for post-run checkpoint work',
     assert.ok(!source.includes('await this.saveAutoCheckpointAfterFileModification(service, input, entries);'), 'Must not await auto-checkpoint after emitting the final response');
 });
 
-test('Agent runtime: workbench uses the linear DeepAgents event stream', () => {
+test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
 
-    assert.ok(source.includes("version: 'v2'"), 'Workbench runs must use the linear event stream');
-    assert.ok(source.includes('consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens)'), 'Must consume the linear event stream directly');
-    assert.ok(!source.includes("streamEvents({ messages }, { ...config, version: 'v3' })"), 'Must not start the v3 projection stream for Workbench runs');
+    assert.ok(source.includes("streamEvents({ messages }, { ...config, version: 'v3' })"), 'Workbench runs must use the DeepAgents v3 run stream');
+    assert.ok(source.includes('consumeDeepAgentV3Run(run, input, entries, sessions.service, postMessage, signal, contextWindowTokens)'), 'Must consume the native v3 run stream directly');
+    assert.ok(source.includes('Promise.resolve(run.output)'), 'Must use native run.output for authoritative completion');
+    assert.ok(source.includes('consumeDeepAgentV3MessageProjection'), 'Must adapt native v3 message projections for UI streaming');
+    assert.ok(source.includes('consumeDeepAgentV3ToolCallProjection'), 'Must adapt native v3 tool-call projections for UI operations');
+    assert.ok(source.includes('run.messages'), 'Must read the native run.messages projection');
+    assert.ok(source.includes('run.toolCalls'), 'Must read the native run.toolCalls projection');
+    assert.ok(!source.includes("version: 'v2'"), 'Workbench runtime must not request the legacy v2 stream');
+    assert.ok(!source.includes('consumeDeepAgentV2Stream'), 'Workbench runtime must not keep the legacy v2 stream consumer');
+    assert.ok(!source.includes('waitForDeepAgentV3Sidecars'), 'Workbench runtime must not wait on separate v3 projection sidecars');
 });
 
 test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
