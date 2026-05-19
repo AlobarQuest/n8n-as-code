@@ -772,6 +772,7 @@ class WorkbenchSessionService implements SessionServiceHandle {
 
 export class AgentRuntimeController implements vscode.Disposable {
     private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer' } | undefined;
+    private readonly stoppedRuns = new WeakSet<AbortController>();
     private queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
     private cachedAgentHandle: { key: string; handle: any } | undefined;
     private sessionRuntimePromise: Promise<SessionRuntime> | undefined;
@@ -1185,15 +1186,10 @@ export class AgentRuntimeController implements vscode.Disposable {
             result = { workflowChanged: runResult.workflowChanged };
         } catch (error: any) {
             const message = error?.message || String(error);
-            if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'stop') {
+            if (this.stoppedRuns.has(abortController)) {
                 this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime stopped sessionId=${activeRecord.id}`);
-                const latestEntries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
-                this.writeSessionEntries(sessions.service, activeRecord.id, [
-                    ...this.finalizePendingOperations(latestEntries, 'done'),
-                    this.createSystemNotice('Run stopped.'),
-                ]);
+                this.appendRunStoppedNotice(sessions.service, activeRecord.id);
                 this.queuedPrompt = undefined;
-                await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
                 result = { workflowChanged: false };
             } else if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'steer') {
                 this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime steered sessionId=${activeRecord.id}`);
@@ -1259,9 +1255,15 @@ export class AgentRuntimeController implements vscode.Disposable {
             return;
         }
         this.queuedPrompt = undefined;
-        await postMessage({ type: 'agent.status', status: 'stopping', detail: 'Stopping current run...' });
         activeRun.abortReason = 'stop';
+        this.stoppedRuns.add(activeRun.abortController);
         activeRun.abortController.abort();
+        if (this.activeRun?.abortController === activeRun.abortController) {
+            this.activeRun = undefined;
+        }
+        const sessions = await this.getSessionRuntime();
+        this.appendRunStoppedNotice(sessions.service, activeRun.sessionId);
+        await postMessage({ type: 'agent.status', status: 'idle' });
     }
 
     dispose(): void {
@@ -2929,6 +2931,18 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     private createSystemNotice(text: string): AgentTimelineEntry {
         return { kind: 'system-notice', id: randomUUID(), text, timestamp: Date.now() };
+    }
+
+    private appendRunStoppedNotice(service: SessionServiceHandle, sessionId: string): void {
+        const entries = this.withoutContextUsage(this.readSessionEntries(service, sessionId));
+        const last = entries[entries.length - 1];
+        if (last?.kind === 'system-notice' && last.text === 'Run stopped.') {
+            return;
+        }
+        this.writeSessionEntries(service, sessionId, [
+            ...this.finalizePendingOperations(entries, 'done'),
+            this.createSystemNotice('Run stopped.'),
+        ]);
     }
 
     private withoutContextUsage(entries: AgentTimelineEntry[]): AgentTimelineEntry[] {
