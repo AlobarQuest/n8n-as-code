@@ -1283,6 +1283,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         let newSessionMenuOpen = false;
         let autoScrollFeed = true;
         let pendingPrompt = null;
+        let lastStateSequence = 0;
+        const rewoundMessageIds = new Set();
         const expandedDetailKeys = new Set();
 
         const OP_ICONS = {
@@ -2355,6 +2357,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const entries = state.session.entries;
             const idx = entries.findIndex((candidate) => candidate && candidate.kind === 'user-message' && candidate.id === entry.id);
             if (idx < 0) return;
+            rewoundMessageIds.add(entry.id);
             state.session.entries = entries.slice(0, idx);
             state.session.contextUsage = undefined;
             pendingPrompt = null;
@@ -2373,6 +2376,19 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             renderFeed();
             renderMentionMenu();
             if (checkpointOverlay && checkpointOverlay.classList.contains('open')) renderCheckpoints();
+        }
+
+        function incomingStateContainsRewoundMessage(nextState) {
+            if (!nextState || !nextState.session || !Array.isArray(nextState.session.entries) || !rewoundMessageIds.size) return false;
+            return nextState.session.entries.some((entry) => entry && entry.kind === 'user-message' && rewoundMessageIds.has(entry.id));
+        }
+
+        function acceptIncomingStateMessage(message) {
+            const sequence = Number(message.stateSequence || 0);
+            if (sequence && sequence < lastStateSequence) return false;
+            if (incomingStateContainsRewoundMessage(message.state)) return false;
+            if (sequence) lastStateSequence = sequence;
+            return true;
         }
 
         function getMentionQuery() {
@@ -2842,6 +2858,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'agent.state') {
+                if (!acceptIncomingStateMessage(message)) return;
                 state = message.state || null;
                 renderAll();
                 return;

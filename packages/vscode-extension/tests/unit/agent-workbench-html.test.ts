@@ -129,8 +129,20 @@ test('Agent runtime: final response does not wait for post-run checkpoint work',
     const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
 
     assert.ok(source.includes("await postMessage({ type: 'agent.status', status: 'idle' });\n                postedIdle = true;"), 'Must post idle before slower state refresh work on normal completion');
+    assert.ok(source.includes('const finalOutput = responseText ? undefined : await finalOutputPromise;'), 'Must not wait for DeepAgents final output when visible response text already streamed');
     assert.ok(source.includes('saveAutoCheckpointAfterFileModificationInBackground'), 'Must keep auto-checkpoints off the response critical path');
     assert.ok(!source.includes('await this.saveAutoCheckpointAfterFileModification(service, input, entries);'), 'Must not await auto-checkpoint after emitting the final response');
+});
+
+test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/ui/agent-workbench-webview.ts'), 'utf8');
+
+    assert.ok(source.includes('private _stateSequence = 0;'), 'Must version Workbench state messages');
+    assert.ok(source.includes("await this._panel.webview.postMessage({ type: 'agent.state', state: nextState, stateSequence });"), 'Must send critical runtime state before enrichment');
+    assert.ok(source.includes("void this.postWorkbenchState(nextState, { enrich: true })"), 'Must move heavy state enrichment off the run critical path');
+    assert.ok(source.includes('await this.postWorkbenchState(message.state, { enrich: false });'), 'Runtime state messages should use the lightweight path');
 });
 
 test('Agent runtime: start state includes checkpointed user message', () => {
@@ -161,6 +173,22 @@ test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () =
     assert.ok(html.includes("type: 'agent.message.rewind'"), 'Must request a rewind from a user message action');
     assert.ok(html.includes("message.type === 'agent.messageRewind'"), 'Must handle restored prompts from the extension host');
     assert.ok(html.includes('promptInput.focus()'), 'Must focus the composer after rewinding');
+});
+
+test('Agent Workbench HTML: stale state cannot undo a local rewind', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('const rewoundMessageIds = new Set();'), 'Must remember locally rewound messages');
+    assert.ok(html.includes('rewoundMessageIds.add(entry.id);'), 'Must mark the target message before waiting for host confirmation');
+    assert.ok(html.includes('function acceptIncomingStateMessage(message)'), 'Must gate incoming state messages');
+    assert.ok(html.includes('if (incomingStateContainsRewoundMessage(message.state)) return false;'), 'Must ignore late states that contain rewound messages');
+    assert.ok(html.includes('if (sequence && sequence < lastStateSequence) return false;'), 'Must ignore out-of-order state updates');
 });
 
 test('Agent Workbench HTML: assistant responses expose a copy action dock', () => {

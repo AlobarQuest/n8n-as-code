@@ -171,7 +171,7 @@ type AgentContextUsageEvent = { type: 'context-usage'; promptTokens: number; com
 
 export type AgentWorkbenchMessage =
     | { type: 'agent.status'; status: 'idle' | 'running' | 'stopping'; detail?: string }
-    | { type: 'agent.state'; state: AgentWorkbenchState }
+    | { type: 'agent.state'; state: AgentWorkbenchState; stateSequence?: number }
     | { type: 'agent.streamEvent'; event: AgentStreamEvent }
     | { type: 'agent.messageRewind'; prompt: string }
     | { type: 'agent.error'; message: string }
@@ -1393,7 +1393,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         fileModificationDetected = changed;
 
         await this.throwIfAborted(signal);
-        const finalOutput = await finalOutputPromise;
+        const finalOutput = responseText ? undefined : await finalOutputPromise;
         const finalResponse = responseText
             || this.extractAssistantTextFromAgentOutput(finalOutput)
             || this.buildToolOnlyCompletionResponse(entries);
