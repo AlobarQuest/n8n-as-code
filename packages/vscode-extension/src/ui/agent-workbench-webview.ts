@@ -371,7 +371,7 @@ export class AgentWorkbenchWebview {
                     type: 'progress',
                     tone: 'info',
                     title: 'Compacting context',
-                    detail: 'Requesting runtime context compaction from DeepAgentJS.',
+                    detail: 'Requesting runtime context compaction',
                     phase: 'compaction',
                 },
             });
