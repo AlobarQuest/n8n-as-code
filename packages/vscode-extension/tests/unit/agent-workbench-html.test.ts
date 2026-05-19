@@ -145,9 +145,27 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     assert.ok(source.includes('consumeDeepAgentV3ToolCallProjection'), 'Must adapt native v3 tool-call projections for UI operations');
     assert.ok(source.includes('run.messages'), 'Must read the native run.messages projection');
     assert.ok(source.includes('run.toolCalls'), 'Must read the native run.toolCalls projection');
-    assert.ok(!source.includes("version: 'v2'"), 'Workbench runtime must not request the legacy v2 stream');
-    assert.ok(!source.includes('consumeDeepAgentV2Stream'), 'Workbench runtime must not keep the legacy v2 stream consumer');
-    assert.ok(!source.includes('waitForDeepAgentV3Sidecars'), 'Workbench runtime must not wait on separate v3 projection sidecars');
+
+    const forbiddenLegacyStreamMarkers = [
+        "version: 'v2'",
+        'version: "v2"',
+        'consumeDeepAgentV2Stream',
+        'processDeepAgentStreamEvent',
+        'extractStreamDeltas',
+        'emitContextUsageFromChunk',
+        'getStreamOperationId',
+        'on_chat_model_stream',
+        'on_chat_model_end',
+        'on_tool_start',
+        'on_tool_end',
+        'stream=v2',
+        'linear DeepAgents event stream',
+        'resolveWithTimeout',
+        'waitForDeepAgentV3Sidecars',
+    ];
+    for (const marker of forbiddenLegacyStreamMarkers) {
+        assert.ok(!source.includes(marker), `Workbench runtime must not contain legacy DeepAgents stream marker: ${marker}`);
+    }
 });
 
 test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
