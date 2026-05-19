@@ -303,11 +303,12 @@ export class ConfigurationWebview {
           const configService = new ConfigService(workspaceRoot);
           const environmentId = String(payload.environmentId || '').trim();
           let environmentTargetId = String(payload.environmentTargetId || '').trim();
+          let existingEnvironmentTargetId = '';
           let currentEnvironmentTargetUrl = '';
           if (environmentId) {
             const existingEnvironment = configService.getEnvironment(environmentId);
-            environmentTargetId = existingEnvironment.environmentTargetId;
-            const existingTarget = configService.getInstanceTarget(environmentTargetId);
+            existingEnvironmentTargetId = existingEnvironment.environmentTargetId;
+            const existingTarget = configService.getInstanceTarget(existingEnvironmentTargetId);
             if (existingTarget.kind === 'external-instance') {
               currentEnvironmentTargetUrl = normalizeHost(existingTarget.url);
             } else {
@@ -321,7 +322,11 @@ export class ConfigurationWebview {
           const name = String(payload.name || '').trim();
           const projectId = String(payload.projectId || '').trim();
           const projectName = String(payload.projectName || '').trim() || 'Personal';
-          if (environmentId && url && url !== currentEnvironmentTargetUrl) {
+          if (environmentId && !environmentTargetId && !instanceId && !url) {
+            environmentTargetId = existingEnvironmentTargetId;
+          }
+          const selectedExistingTargetChanged = Boolean(environmentId && environmentTargetId && environmentTargetId !== existingEnvironmentTargetId);
+          if (environmentId && !selectedExistingTargetChanged && url && url !== currentEnvironmentTargetUrl) {
             if (!apiKey) throw new Error('API key is required when replacing the environment URL.');
             environmentTargetId = this.ensureEmbeddedWorkspaceTarget(configService, {
               name: name || url,
