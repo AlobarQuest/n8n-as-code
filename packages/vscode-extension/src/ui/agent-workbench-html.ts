@@ -1283,6 +1283,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         let newSessionMenuOpen = false;
         let autoScrollFeed = true;
         let pendingPrompt = null;
+        let runtimeFinalizing = false;
         let lastStateSequence = 0;
         const rewoundMessageIds = new Set();
         const expandedDetailKeys = new Set();
@@ -2392,7 +2393,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const hasLiveEntry = currentEntries.some((entry) =>
                 entry && ((entry.kind === 'assistant-body' && entry.streaming) || (entry.kind === 'operation' && entry.status === 'running'))
             );
-            return isRunning || hasLiveEntry;
+            return isRunning || runtimeFinalizing || hasLiveEntry;
         }
 
         function acceptIncomingStateMessage(message) {
@@ -2629,6 +2630,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             } else if (event.type === 'final') {
                 entries = finalizePendingOperations(entries, 'done');
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
+                runtimeFinalizing = Boolean(event.runtimeFinalizing);
                 setRunning(false);
             } else if (event.type === 'operation') {
                 const idx = findMatchingPendingOperationIndex(entries, event.operationId, event.label, event.category);
@@ -2692,7 +2694,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const text = promptInput.value.trim();
             if (!text || !state) return;
             promptInput.value = '';
-            if (isRunning) {
+            if (isRunning || runtimeFinalizing) {
                 pendingPrompt = { text, mode: 'pending' };
                 renderPendingPrompt();
                 vscode.postMessage({ type: 'agent.queue', text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
@@ -2851,6 +2853,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'agent.status') {
+                if (message.status === 'idle') runtimeFinalizing = false;
                 setRunning(message.status === 'running');
                 return;
             }

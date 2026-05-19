@@ -164,7 +164,7 @@ export type AgentStreamEvent =
     | { type: 'text-delta'; delta: string }
     | { type: 'compaction'; summary: string; source: 'llm' | 'fallback'; messagesCompacted: number; preservedRecentMessages: number; estimatedTokens?: number; thresholdTokens?: number; fallbackReason?: string }
     | AgentContextUsageEvent
-    | { type: 'final'; sessionId: string; response: string; finalState: string }
+    | { type: 'final'; sessionId: string; response: string; finalState: string; runtimeFinalizing?: boolean }
     | { type: 'error'; error: string };
 
 type AgentContextUsageEvent = { type: 'context-usage'; promptTokens: number; completionTokens: number; contextWindowTokens: number; fillPercent: number; source: 'api' | 'estimated' };
@@ -770,7 +770,7 @@ class WorkbenchSessionService implements SessionServiceHandle {
 }
 
 export class AgentRuntimeController implements vscode.Disposable {
-    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer' } | undefined;
+    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer'; visibleDone?: boolean } | undefined;
     private readonly stoppedRuns = new WeakSet<AbortController>();
     private queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
     private cachedAgentHandle: { key: string; handle: any } | undefined;
@@ -1106,6 +1106,9 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     async sendPrompt(input: AgentPromptInput, postMessage: AgentWorkbenchPostMessage): Promise<AgentRunResult> {
         if (this.activeRun) {
+            if (this.activeRun.visibleDone) {
+                return this.queuePrompt(input, postMessage, 'pending');
+            }
             await postMessage({
                 type: 'agent.error',
                 message: 'An agent run is already in progress. Stop it before sending another prompt.',
@@ -1381,12 +1384,31 @@ export class AgentRuntimeController implements vscode.Disposable {
                 fileModificationDetected = true;
             }
         };
+        const emitFinalEvent = async (response: string, finalState: string, runtimeFinalizing: boolean) => {
+            if (finalEmitted) return;
+            finalEmitted = true;
+            const activeRun = this.activeRun;
+            if (runtimeFinalizing && activeRun && activeRun.sessionId === input.sessionId) {
+                activeRun.visibleDone = true;
+            }
+            const finalEvent: AgentStreamEvent = {
+                type: 'final',
+                sessionId: input.sessionId || '',
+                response,
+                finalState,
+                runtimeFinalizing,
+            };
+            entries = this.applyStreamEvent(entries, finalEvent);
+            syncEntries();
+            await postMessage({ type: 'agent.streamEvent', event: finalEvent });
+        };
 
         void Promise.allSettled([
             this.consumeDeepAgentV3MessageProjection(run, accumulator, {
                 signal,
                 contextWindowTokens,
                 onStreamEvent: emitStreamEvent,
+                onFinalCandidate: async (response) => emitFinalEvent(response, 'done', true),
             }),
             this.consumeDeepAgentV3ToolCallProjection(run, {
                 signal,
@@ -1417,16 +1439,11 @@ export class AgentRuntimeController implements vscode.Disposable {
             accumulator.thinkingText = '';
             accumulator.thinkingOperationId = undefined;
         }
-        finalEmitted = true;
-        const finalEvent: AgentStreamEvent = {
-            type: 'final',
-            sessionId: input.sessionId || '',
-            response: this.extractAssistantTextFromAgentOutput(finalOutput) || accumulator.responseText || this.extractAgentText(finalOutput),
-            finalState: run.interrupted ? 'interrupted' : 'done',
-        };
-        entries = this.applyStreamEvent(entries, finalEvent);
-        syncEntries();
-        await postMessage({ type: 'agent.streamEvent', event: finalEvent });
+        await emitFinalEvent(
+            this.extractAssistantTextFromAgentOutput(finalOutput) || accumulator.responseText || this.extractAgentText(finalOutput),
+            run.interrupted ? 'interrupted' : 'done',
+            false,
+        );
         if (fileModificationDetected) {
             this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
         }
@@ -1441,6 +1458,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             signal: AbortSignal;
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onFinalCandidate: (response: string) => Promise<void>;
         },
     ): Promise<void> {
         if (!this.isAsyncIterable(run.messages)) return;
@@ -1451,19 +1469,21 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async consumeDeepAgentV3Message(
-        message: { text?: AsyncIterable<string>; reasoning?: AsyncIterable<string>; usage?: AsyncIterable<any> },
+        message: { text?: AsyncIterable<string>; reasoning?: AsyncIterable<string>; usage?: AsyncIterable<any>; output?: PromiseLike<unknown> },
         accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
         callbacks: {
             signal: AbortSignal;
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onFinalCandidate: (response: string) => Promise<void>;
         },
     ): Promise<void> {
         const messageKey = `message:${randomUUID()}`;
-        await Promise.all([
+        const [, messageText, , output] = await Promise.all([
             this.consumeDeepAgentV3MessageReasoning(message, messageKey, accumulator, callbacks),
             this.consumeDeepAgentV3MessageText(message, messageKey, accumulator, callbacks),
             this.consumeDeepAgentV3MessageUsage(message, callbacks),
+            Promise.resolve(message.output).catch(() => undefined),
         ]);
         if (accumulator.thinkingText && accumulator.thinkingOperationId === `thinking:${messageKey}`) {
             await callbacks.onStreamEvent({
@@ -1478,6 +1498,10 @@ export class AgentRuntimeController implements vscode.Disposable {
             });
             accumulator.thinkingText = '';
             accumulator.thinkingOperationId = undefined;
+        }
+        const finalText = this.extractMessageTextFromOutput(output) || messageText;
+        if (finalText.trim() && !this.messageHasToolCalls(output)) {
+            await callbacks.onFinalCandidate(this.sanitizeAssistantText(finalText));
         }
     }
 
@@ -1517,8 +1541,9 @@ export class AgentRuntimeController implements vscode.Disposable {
             signal: AbortSignal;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
         },
-    ): Promise<void> {
-        if (!this.isAsyncIterable(message.text)) return;
+    ): Promise<string> {
+        if (!this.isAsyncIterable(message.text)) return '';
+        let text = '';
         for await (const delta of message.text) {
             await this.throwIfAborted(callbacks.signal);
             if (typeof delta === 'string' && delta) {
@@ -1537,9 +1562,11 @@ export class AgentRuntimeController implements vscode.Disposable {
                     accumulator.thinkingOperationId = undefined;
                 }
                 accumulator.responseText += delta;
+                text += delta;
                 await callbacks.onStreamEvent({ type: 'text-delta', delta });
             }
         }
+        return text;
     }
 
     private async consumeDeepAgentV3MessageUsage(
@@ -2107,6 +2134,28 @@ export class AgentRuntimeController implements vscode.Disposable {
             }).join(''));
         }
         return 'The agent completed without producing text.';
+    }
+
+    private extractMessageTextFromOutput(output: unknown): string {
+        if (!this.isRecord(output)) return '';
+        return this.sanitizeAssistantText(this.extractMessageTextContent(output.content));
+    }
+
+    private messageHasToolCalls(message: unknown): boolean {
+        const visit = (value: unknown): boolean => {
+            if (!this.isRecord(value)) return false;
+            for (const key of ['tool_calls', 'toolCalls', 'invalid_tool_calls', 'invalidToolCalls']) {
+                if (Array.isArray(value[key]) && (value[key] as unknown[]).length > 0) return true;
+            }
+            for (const key of ['content', 'content_blocks']) {
+                const blocks = value[key];
+                if (Array.isArray(blocks) && blocks.some((block) => this.isRecord(block) && String(block.type || '').includes('tool'))) {
+                    return true;
+                }
+            }
+            return visit(value.kwargs) || visit(value.lc_kwargs);
+        };
+        return visit(message);
     }
 
     private extractAssistantTextFromAgentOutput(result: unknown): string {

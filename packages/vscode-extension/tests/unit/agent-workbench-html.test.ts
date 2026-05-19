@@ -96,7 +96,7 @@ test('Agent Workbench HTML: stop is icon-only and updates optimistically', () =>
     assert.ok(html.includes("vscode.postMessage({ type: 'agent.stop' });"), 'Must still request runtime stop');
 });
 
-test('Agent Workbench HTML: final stream event releases composer immediately', () => {
+test('Agent Workbench HTML: final stream event releases composer while runtime can finish', () => {
     const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({
         workflowId: 'wf-1',
@@ -106,7 +106,11 @@ test('Agent Workbench HTML: final stream event releases composer immediately', (
     });
 
     assert.ok(html.includes("event.type === 'final'"), 'Must handle the final stream event');
-    assert.ok(html.includes("entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);\n                setRunning(false);"), 'Must unlock the composer as soon as the final response arrives');
+    assert.ok(html.includes('runtimeFinalizing = Boolean(event.runtimeFinalizing);'), 'Must remember when DeepAgents is still finalizing after the visible answer');
+    assert.ok(html.includes('setRunning(false);'), 'Must unlock the composer as soon as the final response arrives');
+    assert.ok(html.includes('if (isRunning || runtimeFinalizing)'), 'Must queue immediate follow-up prompts while the native runtime context finalizes');
+    assert.ok(html.includes("if (message.status === 'idle') runtimeFinalizing = false;"), 'Must clear runtime finalization once the host posts idle');
+    assert.ok(html.includes('return isRunning || runtimeFinalizing || hasLiveEntry;'), 'Must reject stale runtime states that would remove the visible final answer while DeepAgents finalizes');
 });
 
 test('Agent Workbench HTML: stop releases inline message actions immediately', () => {
@@ -148,6 +152,10 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     assert.ok(source.includes('message.text'), 'Must read the native message.text projection');
     assert.ok(source.includes('message.reasoning'), 'Must read the native message.reasoning projection');
     assert.ok(source.includes('message.usage'), 'Must read the native message.usage projection');
+    assert.ok(source.includes('message.output'), 'Must await each native message output to detect visible completion');
+    assert.ok(source.includes('onFinalCandidate'), 'Must emit a visible final response from native message projections');
+    assert.ok(source.includes('runtimeFinalizing'), 'Must distinguish visible completion from authoritative run.output completion');
+    assert.ok(source.includes('visibleDone'), 'Must let follow-up prompts queue once the visible answer is complete');
 
     const forbiddenLegacyStreamMarkers = [
         "version: 'v2'",
