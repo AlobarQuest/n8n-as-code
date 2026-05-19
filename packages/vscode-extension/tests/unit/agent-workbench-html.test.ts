@@ -78,6 +78,21 @@ test('Agent Workbench HTML: Enter submits and Shift+Enter keeps multiline input'
     assert.ok(html.includes('sendPrompt();'), 'Must submit the composer from the Enter key handler');
 });
 
+test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('function userMessageEntry(entry)'), 'Must render user messages through checkpoint-aware UI');
+    assert.ok(html.includes("type: 'agent.message.rewind'"), 'Must request a rewind from a user message action');
+    assert.ok(html.includes("message.type === 'agent.messageRewind'"), 'Must handle restored prompts from the extension host');
+    assert.ok(html.includes('promptInput.focus()'), 'Must focus the composer after rewinding');
+});
+
 test('Agent Workbench HTML: context usage and compaction follow agent runtime contracts', () => {
     const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({

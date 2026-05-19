@@ -50,6 +50,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const trashIcon = lucideIcon('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>');
     const compactIcon = lucideIcon('<path d="M6 12h12"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/>');
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
+    const rewindIcon = lucideIcon('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
     const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
     const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
@@ -508,10 +509,54 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 13px;
             overflow-wrap: anywhere;
         }
-        .entry.user { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+        .entry.user {
+            border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+        }
         .entry.system { color: var(--muted); }
         .entry.assistant.streaming { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
         .entry.operation, .entry.compaction, .entry.context { background: color-mix(in srgb, var(--elevated) 90%, transparent); }
+        .entry-body {
+            white-space: pre-wrap;
+        }
+        .message-actions {
+            display: flex;
+            justify-content: flex-start;
+            margin-top: 8px;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+        .entry.user:hover .message-actions,
+        .entry.user:focus-within .message-actions {
+            opacity: 1;
+        }
+        .message-rewind {
+            display: inline-grid;
+            place-items: center;
+            width: 28px;
+            height: 24px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: color-mix(in srgb, var(--elevated) 80%, transparent);
+            color: var(--muted);
+            cursor: pointer;
+        }
+        .message-rewind:hover:not(:disabled) {
+            color: var(--text);
+            border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+        }
+        .message-rewind:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+        .message-rewind svg {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
         .entry-head {
             display: flex;
             justify-content: space-between;
@@ -1306,6 +1351,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             compactContextButton.disabled = running;
             if (runIndicator) runIndicator.classList.toggle('active', running);
             renderCheckpoints();
+            renderFeed();
         }
 
         function renderPendingPrompt() {
@@ -1934,7 +1980,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
         function renderEntry(entry, index) {
             if (entry.kind === 'user-message') {
-                return textEntry('user', entry.text);
+                return userMessageEntry(entry);
             }
             if (entry.kind === 'system-notice') {
                 return textEntry('system', entry.text);
@@ -2225,6 +2271,39 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const el = document.createElement('div');
             el.className = 'entry ' + kind;
             el.textContent = text || '';
+            return el;
+        }
+
+        function userMessageEntry(entry) {
+            const el = document.createElement('div');
+            el.className = 'entry user';
+            const body = document.createElement('div');
+            body.className = 'entry-body';
+            body.textContent = entry.text || '';
+            el.appendChild(body);
+
+            const checkpointId = entry.checkpoint && entry.checkpoint.workbenchCheckpointId;
+            if (checkpointId) {
+                const actions = document.createElement('div');
+                actions.className = 'message-actions';
+                const rewind = document.createElement('button');
+                rewind.type = 'button';
+                rewind.className = 'message-rewind';
+                rewind.title = 'Rewind to before this message';
+                rewind.setAttribute('aria-label', 'Rewind to before this message');
+                rewind.disabled = isRunning;
+                rewind.innerHTML = '${rewindIcon}';
+                rewind.addEventListener('click', () => {
+                    if (!state || !state.activeSessionId || isRunning) return;
+                    vscode.postMessage({
+                        type: 'agent.message.rewind',
+                        sessionId: state.activeSessionId,
+                        messageId: entry.id,
+                    });
+                });
+                actions.appendChild(rewind);
+                el.appendChild(actions);
+            }
             return el;
         }
 
@@ -2673,6 +2752,15 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (message.type === 'agent.error') {
                 pendingPrompt = null;
                 renderPendingPrompt();
+                return;
+            }
+
+            if (message.type === 'agent.messageRewind') {
+                pendingPrompt = null;
+                renderPendingPrompt();
+                promptInput.value = typeof message.prompt === 'string' ? message.prompt : '';
+                promptInput.focus();
+                promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
                 return;
             }
 

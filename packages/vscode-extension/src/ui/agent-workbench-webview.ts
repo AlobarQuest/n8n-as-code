@@ -348,6 +348,13 @@ export class AgentWorkbenchWebview {
             return;
         }
 
+        if (payload.type === 'agent.message.rewind' && typeof payload.sessionId === 'string' && typeof payload.messageId === 'string') {
+            const result = await this._agentRuntime.rewindToUserMessage(payload.sessionId, payload.messageId, this.buildWorkbenchInput());
+            await this.postWorkbenchState(result.state);
+            await this._panel.webview.postMessage({ type: 'agent.messageRewind', prompt: result.prompt });
+            return;
+        }
+
         if (payload.type === 'agent.checkpoint.save' && typeof payload.sessionId === 'string') {
             await this.postWorkbenchState(await this._agentRuntime.saveCheckpoint(payload.sessionId, this.buildWorkbenchInput()));
             return;

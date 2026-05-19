@@ -64,6 +64,12 @@ export interface AgentCompactionSummary {
     fallbackReason?: string;
 }
 
+export interface AgentMessageCheckpointLink {
+    runtimeCheckpointId?: string;
+    workspaceSnapshotId?: string;
+    workbenchCheckpointId: string;
+}
+
 export interface AgentSessionSummary {
     id: string;
     title: string;
@@ -80,7 +86,7 @@ export interface AgentSessionSummary {
 }
 
 export type AgentTimelineEntry =
-    | { kind: 'user-message'; id: string; text: string; timestamp: number }
+    | { kind: 'user-message'; id: string; text: string; timestamp: number; checkpoint?: AgentMessageCheckpointLink }
     | { kind: 'system-notice'; id: string; text: string; timestamp: number }
     | { kind: 'workflow-context'; id: string; timestamp: number; action: 'set'; workflow: AgentWorkflowContext }
     | { kind: 'workflow-context'; id: string; timestamp: number; action: 'clear' }
@@ -166,6 +172,7 @@ export type AgentWorkbenchMessage =
     | { type: 'agent.status'; status: 'idle' | 'running' | 'stopping'; detail?: string }
     | { type: 'agent.state'; state: AgentWorkbenchState }
     | { type: 'agent.streamEvent'; event: AgentStreamEvent }
+    | { type: 'agent.messageRewind'; prompt: string }
     | { type: 'agent.error'; message: string }
     | { type: 'agent.done' };
 
@@ -218,6 +225,7 @@ type SaveCheckpointOptions = {
     reason?: CheckpointReason;
     label?: string;
     summary?: string;
+    runtimeCheckpointId?: string;
     payloads?: Record<string, unknown>;
     payloadState?: unknown | null;
 };
@@ -525,7 +533,7 @@ class WorkbenchSessionService implements SessionServiceHandle {
             summary: options.summary,
             reason: options.reason,
             label: options.label,
-            runtimeCheckpointId,
+            runtimeCheckpointId: options.runtimeCheckpointId ?? runtimeCheckpointId,
             payloadState: options.payloadState ?? (options.payloads ? { payloads: options.payloads } : undefined),
         };
         fs.mkdirSync(this.sessionCheckpointDir(sessionId), { recursive: true });
@@ -970,6 +978,45 @@ export class AgentRuntimeController implements vscode.Disposable {
         return this.getWorkbenchState({ ...input, sessionId });
     }
 
+    async rewindToUserMessage(sessionId: string, messageId: string, input: Omit<AgentPromptInput, 'prompt'>): Promise<{ state: AgentWorkbenchState; prompt: string }> {
+        if (this.activeRun) {
+            throw new Error(this.activeRun.sessionId === sessionId
+                ? 'An agent run is already active for this conversation.'
+                : 'An agent run is already active. Stop it before rewinding.');
+        }
+        const sessions = await this.getSessionRuntime();
+        const entries = this.readSessionEntries(sessions.service, sessionId);
+        const targetIndex = entries.findIndex((entry) => entry.kind === 'user-message' && entry.id === messageId);
+        const target = targetIndex >= 0 ? entries[targetIndex] : undefined;
+        if (!target || target.kind !== 'user-message') {
+            throw new Error('Cannot rewind: user message not found.');
+        }
+        const checkpointId = target.checkpoint?.workbenchCheckpointId;
+        if (!checkpointId) {
+            throw new Error('Cannot rewind: this message does not have a checkpoint.');
+        }
+
+        const result = await sessions.service.restoreCheckpoint(sessionId, checkpointId);
+        const payloads = this.extractCheckpointPayloads(result);
+        const surface = payloads.surface;
+        if (this.isWorkbenchSurfacePayload(surface)) {
+            const title = surface.title.trim() || sessions.service.get(sessionId)?.title || this.getDefaultSessionTitle(input.workflowName);
+            sessions.service.touch(sessionId, { title });
+            sessions.service.setTitle(sessionId, title);
+            this.writeSessionEntries(sessions.service, sessionId, this.normalizeEntries(surface.displayThread));
+        } else {
+            this.writeSessionEntries(sessions.service, sessionId, entries.slice(0, targetIndex));
+        }
+        if (!result.langGraphRestored) {
+            await sessions.service.resetRuntimeThread(sessionId);
+        }
+
+        return {
+            state: await this.getWorkbenchState({ ...input, sessionId }),
+            prompt: target.text,
+        };
+    }
+
     async restoreCheckpoint(sessionId: string, checkpointId: string, input: Omit<AgentPromptInput, 'prompt'>): Promise<AgentWorkbenchState> {
         const sessions = await this.getSessionRuntime();
         const result = await sessions.service.restoreCheckpoint(sessionId, checkpointId);
@@ -1097,7 +1144,17 @@ export class AgentRuntimeController implements vscode.Disposable {
         sessions.service.setTitle(activeRecord.id, derivedTitle);
 
         let entries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
-        entries = [...entries, { kind: 'user-message', id: randomUUID(), text: prompt, timestamp: Date.now() }];
+        const beforeMessageCheckpoint = await this.saveBeforeUserMessageCheckpoint(sessions.service, activeRecord.id, entries, prompt);
+        entries = [...entries, {
+            kind: 'user-message',
+            id: randomUUID(),
+            text: prompt,
+            timestamp: Date.now(),
+            checkpoint: {
+                workbenchCheckpointId: beforeMessageCheckpoint.id,
+                runtimeCheckpointId: beforeMessageCheckpoint.runtimeCheckpointId,
+            },
+        }];
         this.writeSessionEntries(sessions.service, activeRecord.id, entries);
 
         await postMessage({ type: 'agent.status', status: 'running', detail: 'Preparing n8n agent runtime...' });
@@ -2872,6 +2929,25 @@ export class AgentRuntimeController implements vscode.Disposable {
         options: SaveCheckpointOptions,
     ): Promise<SessionCheckpointMetadata> {
         return service.saveCheckpoint(sessionId, this.withLegacyCheckpointPayload(options));
+    }
+
+    private async saveBeforeUserMessageCheckpoint(
+        service: SessionServiceHandle,
+        sessionId: string,
+        entries: AgentTimelineEntry[],
+        prompt: string,
+    ): Promise<SessionCheckpointMetadata> {
+        service.setCheckpointer(await this.createPersistentCheckpointer());
+        const surface = this.buildCheckpointSurfacePayload(service, sessionId, entries);
+        const promptPreview = prompt.length > 80 ? `${prompt.slice(0, 77)}...` : prompt;
+        return this.saveWorkbenchCheckpoint(service, sessionId, {
+            reason: 'manual',
+            label: 'Before user message',
+            summary: promptPreview ? `Before "${promptPreview}"` : 'Before user message',
+            payloads: {
+                surface,
+            },
+        });
     }
 
     private async maybeSaveWorkbenchCheckpoint(
