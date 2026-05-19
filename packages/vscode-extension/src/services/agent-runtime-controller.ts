@@ -1185,7 +1185,17 @@ export class AgentRuntimeController implements vscode.Disposable {
             result = { workflowChanged: runResult.workflowChanged };
         } catch (error: any) {
             const message = error?.message || String(error);
-            if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'steer') {
+            if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'stop') {
+                this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime stopped sessionId=${activeRecord.id}`);
+                const latestEntries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
+                this.writeSessionEntries(sessions.service, activeRecord.id, [
+                    ...this.finalizePendingOperations(latestEntries, 'done'),
+                    this.createSystemNotice('Run stopped.'),
+                ]);
+                this.queuedPrompt = undefined;
+                await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
+                result = { workflowChanged: false };
+            } else if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'steer') {
                 this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime steered sessionId=${activeRecord.id}`);
                 const latestEntries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
                 this.writeSessionEntries(sessions.service, activeRecord.id, [
@@ -1248,6 +1258,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             await postMessage({ type: 'agent.status', status: 'idle' });
             return;
         }
+        this.queuedPrompt = undefined;
         await postMessage({ type: 'agent.status', status: 'stopping', detail: 'Stopping current run...' });
         activeRun.abortReason = 'stop';
         activeRun.abortController.abort();
@@ -1305,19 +1316,19 @@ export class AgentRuntimeController implements vscode.Disposable {
         if (typeof (agent as any).streamEvents === 'function') {
             let v3Run: any;
             try {
-                v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
+                v3Run = await this.raceAbort(Promise.resolve((agent as any).streamEvents({ messages }, { ...config, version: 'v3' })), signal);
             } catch (error: any) {
                 this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
             }
             if (this.isDeepAgentV3Run(v3Run)) {
-                return await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+                return await this.raceAbort(this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens), signal);
             }
 
             const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
-            return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+            return await this.raceAbort(this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens), signal);
         }
 
-        const result = await (agent as any).invoke({ messages }, config);
+        const result = await this.raceAbort(Promise.resolve((agent as any).invoke({ messages }, config)), signal);
         const response = this.extractAgentText(result);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
@@ -2368,6 +2379,30 @@ export class AgentRuntimeController implements vscode.Disposable {
             error.name = 'AbortError';
             throw error;
         }
+    }
+
+    private async raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+        if (signal.aborted) {
+            await this.throwIfAborted(signal);
+        }
+        return new Promise<T>((resolve, reject) => {
+            const onAbort = () => {
+                const error = new Error('Agent run cancelled.');
+                error.name = 'AbortError';
+                reject(error);
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            promise.then(
+                (value) => {
+                    signal.removeEventListener('abort', onAbort);
+                    resolve(value);
+                },
+                (error) => {
+                    signal.removeEventListener('abort', onAbort);
+                    reject(error);
+                },
+            );
+        });
     }
 
     private async getSessionRuntime(): Promise<SessionRuntime> {

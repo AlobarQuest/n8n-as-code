@@ -78,6 +78,22 @@ test('Agent Workbench HTML: Enter submits and Shift+Enter keeps multiline input'
     assert.ok(html.includes('sendPrompt();'), 'Must submit the composer from the Enter key handler');
 });
 
+test('Agent Workbench HTML: stop is icon-only and updates optimistically', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('<rect width="10" height="10" x="7" y="7" rx="1.5"/>'), 'Must render a stop icon');
+    assert.ok(html.includes('aria-label="Stop"'), 'Must expose an accessible stop label');
+    assert.ok(!html.includes('>Stop</button>'), 'Must not render stop as text');
+    assert.ok(html.includes('setRunning(false);'), 'Must update stop UI before host confirmation');
+    assert.ok(html.includes("vscode.postMessage({ type: 'agent.stop' });"), 'Must still request runtime stop');
+});
+
 test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () => {
     const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({

@@ -52,6 +52,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
     const rewindIcon = lucideIcon('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>');
     const copyIcon = lucideIcon('<rect width="12" height="12" x="8" y="8" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>');
+    const stopIcon = lucideIcon('<rect width="10" height="10" x="7" y="7" rx="1.5"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
     const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
     const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
@@ -1059,7 +1060,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             padding: 4px 8px;
             border-radius: 6px;
         }
-        .send-button {
+        .send-button,
+        .stop-button.active {
             display: inline-grid;
             place-items: center;
             width: 32px;
@@ -1070,7 +1072,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             line-height: 1;
             box-shadow: 0 1px 0 color-mix(in srgb, white 18%, transparent) inset;
         }
-        .send-button svg {
+        .send-button svg,
+        .stop-button svg {
             width: 15px;
             height: 15px;
             stroke: currentColor;
@@ -1083,7 +1086,10 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             display: none;
         }
         .stop-button.active {
-            display: inline-block;
+            color: var(--error);
+            background: transparent;
+            border: 1px solid color-mix(in srgb, var(--error) 55%, var(--border));
+            box-shadow: none;
         }
         button:disabled {
             cursor: not-allowed;
@@ -1200,7 +1206,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                             <div id="reasoning-menu" class="inline-popover reasoning" role="menu"></div>
                         </div>
                         <div class="composer-actions">
-                            <button id="stop" class="ghost stop-button" type="button" disabled>Stop</button>
+                            <button id="stop" class="ghost stop-button" type="button" title="Stop" aria-label="Stop" disabled>${stopIcon}</button>
                             <button id="send" class="send-button" type="submit" title="Send" aria-label="Send">${sendIcon}</button>
                         </div>
                     </div>
@@ -2662,7 +2668,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             autoScrollFeed = isFeedNearBottom();
         });
 
-        on(stopButton, 'click', () => vscode.postMessage({ type: 'agent.stop' }));
+        on(stopButton, 'click', () => {
+            stopButton.disabled = true;
+            setRunning(false);
+            vscode.postMessage({ type: 'agent.stop' });
+        });
         on(historyOpenButton, 'click', openHistory);
         on(historyCloseButton, 'click', closeHistory);
         on(historyOverlay, 'click', (event) => {
@@ -2774,7 +2784,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'agent.status') {
-                setRunning(message.status === 'running' || message.status === 'stopping');
+                setRunning(message.status === 'running');
                 return;
             }
 
