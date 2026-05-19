@@ -51,6 +51,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const compactIcon = lucideIcon('<path d="M6 12h12"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/>');
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
     const rewindIcon = lucideIcon('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>');
+    const branchIcon = lucideIcon('<path d="M6 3v7"/><path d="M18 3v4c0 2.8-2.2 5-5 5H6"/><path d="M6 21v-7"/><circle cx="6" cy="12" r="2"/><circle cx="6" cy="3" r="1.5"/><circle cx="6" cy="21" r="1.5"/>');
+    const copyIcon = lucideIcon('<rect width="12" height="12" x="8" y="8" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
     const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
     const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
@@ -525,33 +527,35 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         .message-actions {
             display: flex;
             justify-content: flex-start;
-            padding-left: 2px;
+            gap: 14px;
+            padding-left: 1px;
         }
-        .message-rewind {
+        .message-action {
             display: inline-grid;
             place-items: center;
-            width: 28px;
-            height: 24px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: color-mix(in srgb, var(--elevated) 80%, transparent);
+            width: 18px;
+            height: 18px;
+            border: 0;
+            border-radius: 4px;
+            background: transparent;
             color: var(--muted);
             cursor: pointer;
+            padding: 0;
         }
-        .message-rewind:hover:not(:disabled) {
+        .message-action:hover:not(:disabled) {
             color: var(--text);
-            border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+            background: color-mix(in srgb, var(--elevated) 70%, transparent);
         }
-        .message-rewind:disabled {
-            opacity: 0.45;
+        .message-action:disabled {
+            opacity: 0.55;
             cursor: default;
         }
-        .message-rewind svg {
-            width: 15px;
-            height: 15px;
+        .message-action svg {
+            width: 14px;
+            height: 14px;
             stroke: currentColor;
             fill: none;
-            stroke-width: 2;
+            stroke-width: 1.7;
             stroke-linecap: round;
             stroke-linejoin: round;
         }
@@ -2287,9 +2291,16 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (checkpointId) {
                 const actions = document.createElement('div');
                 actions.className = 'message-actions';
+                const branch = document.createElement('button');
+                branch.type = 'button';
+                branch.className = 'message-action';
+                branch.title = 'Fork from here';
+                branch.setAttribute('aria-label', 'Fork from here');
+                branch.disabled = true;
+                branch.innerHTML = '${branchIcon}';
                 const rewind = document.createElement('button');
                 rewind.type = 'button';
-                rewind.className = 'message-rewind';
+                rewind.className = 'message-action message-rewind';
                 rewind.title = 'Rewind to before this message';
                 rewind.setAttribute('aria-label', 'Rewind to before this message');
                 rewind.disabled = isRunning;
@@ -2303,7 +2314,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                         messageId: entry.id,
                     });
                 });
-                actions.appendChild(rewind);
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'message-action';
+                copy.title = 'Copy message';
+                copy.setAttribute('aria-label', 'Copy message');
+                copy.disabled = true;
+                copy.innerHTML = '${copyIcon}';
+                actions.append(branch, rewind, copy);
                 wrap.appendChild(actions);
             }
             return wrap;
