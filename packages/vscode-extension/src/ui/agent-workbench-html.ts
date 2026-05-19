@@ -2471,6 +2471,19 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             });
         }
 
+        function stopRunOptimistically() {
+            if (!state || !state.session || !Array.isArray(state.session.entries)) return;
+            let entries = finalizePendingOperations([...state.session.entries], 'done');
+            const last = entries[entries.length - 1];
+            if (!last || last.kind !== 'system-notice' || last.text !== 'Run stopped.') {
+                entries.push({ kind: 'system-notice', id: crypto.randomUUID(), text: 'Run stopped.', timestamp: Date.now() });
+            }
+            state.session.entries = entries;
+            pendingPrompt = null;
+            renderPendingPrompt();
+            renderAll();
+        }
+
         function stripEnvironmentDetails(text) {
             let value = String(text || '');
             const openTag = '<environment_details>';
@@ -2670,6 +2683,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
         on(stopButton, 'click', () => {
             stopButton.disabled = true;
+            stopRunOptimistically();
             setRunning(false);
             vscode.postMessage({ type: 'agent.stop' });
         });

@@ -90,6 +90,8 @@ test('Agent Workbench HTML: stop is icon-only and updates optimistically', () =>
     assert.ok(html.includes('<rect width="10" height="10" x="7" y="7" rx="1.5"/>'), 'Must render a stop icon');
     assert.ok(html.includes('aria-label="Stop"'), 'Must expose an accessible stop label');
     assert.ok(!html.includes('>Stop</button>'), 'Must not render stop as text');
+    assert.ok(html.includes('function stopRunOptimistically()'), 'Must render the stopped notice before host confirmation');
+    assert.ok(html.includes("text: 'Run stopped.'"), 'Must add the stopped notice optimistically');
     assert.ok(html.includes('setRunning(false);'), 'Must update stop UI before host confirmation');
     assert.ok(html.includes("vscode.postMessage({ type: 'agent.stop' });"), 'Must still request runtime stop');
 });
