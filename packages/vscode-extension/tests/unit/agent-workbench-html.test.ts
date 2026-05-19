@@ -107,6 +107,7 @@ test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () =
 
     assert.ok(html.includes('function userMessageEntry(entry)'), 'Must render user messages through checkpoint-aware UI');
     assert.ok(html.includes("wrap.className = 'message-group user-message'"), 'Must place rewind controls below the message bubble');
+    assert.ok(html.includes('justify-content: flex-end;'), 'Must align message action toolbar to the right');
     assert.ok(html.includes("actions.append(rewind, copy)"), 'Must render a compact two-action message toolbar');
     assert.ok(html.includes('rewindMessageOptimistically(entry)'), 'Must update the conversation immediately before runtime restore completes');
     assert.ok(html.includes("type: 'agent.message.rewind'"), 'Must request a rewind from a user message action');

@@ -526,9 +526,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         }
         .message-actions {
             display: flex;
-            justify-content: flex-start;
+            justify-content: flex-end;
             gap: 14px;
-            padding-left: 1px;
+            padding-right: 1px;
         }
         .message-action {
             display: inline-grid;
