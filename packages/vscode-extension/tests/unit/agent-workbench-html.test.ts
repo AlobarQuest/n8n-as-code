@@ -145,12 +145,16 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     assert.ok(source.includes('consumeDeepAgentV3ToolCallProjection'), 'Must adapt native v3 tool-call projections for UI operations');
     assert.ok(source.includes('run.messages'), 'Must read the native run.messages projection');
     assert.ok(source.includes('run.toolCalls'), 'Must read the native run.toolCalls projection');
+    assert.ok(source.includes('message.text'), 'Must read the native message.text projection');
+    assert.ok(source.includes('message.reasoning'), 'Must read the native message.reasoning projection');
+    assert.ok(source.includes('message.usage'), 'Must read the native message.usage projection');
 
     const forbiddenLegacyStreamMarkers = [
         "version: 'v2'",
         'version: "v2"',
         'consumeDeepAgentV2Stream',
         'processDeepAgentStreamEvent',
+        'processDeepAgentV3MessageProjectionEvent',
         'extractStreamDeltas',
         'emitContextUsageFromChunk',
         'getStreamOperationId',

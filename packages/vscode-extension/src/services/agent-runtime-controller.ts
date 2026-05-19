@@ -1451,7 +1451,7 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async consumeDeepAgentV3Message(
-        message: AsyncIterable<any>,
+        message: { text?: AsyncIterable<string>; reasoning?: AsyncIterable<string>; usage?: AsyncIterable<any> },
         accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
         callbacks: {
             signal: AbortSignal;
@@ -1460,27 +1460,41 @@ export class AgentRuntimeController implements vscode.Disposable {
         },
     ): Promise<void> {
         const messageKey = `message:${randomUUID()}`;
-        for await (const event of message) {
-            await this.throwIfAborted(callbacks.signal);
-            await this.processDeepAgentV3MessageProjectionEvent(event, messageKey, accumulator, callbacks);
+        await Promise.all([
+            this.consumeDeepAgentV3MessageReasoning(message, messageKey, accumulator, callbacks),
+            this.consumeDeepAgentV3MessageText(message, messageKey, accumulator, callbacks),
+            this.consumeDeepAgentV3MessageUsage(message, callbacks),
+        ]);
+        if (accumulator.thinkingText && accumulator.thinkingOperationId === `thinking:${messageKey}`) {
+            await callbacks.onStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
         }
     }
 
-    private async processDeepAgentV3MessageProjectionEvent(
-        event: any,
+    private async consumeDeepAgentV3MessageReasoning(
+        message: { reasoning?: AsyncIterable<string> },
         messageKey: string,
         accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
         callbacks: {
             signal: AbortSignal;
-            contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
         },
     ): Promise<void> {
-        if (!event || typeof event !== 'object') return;
-        if (event.event === 'content-block-delta') {
-            const delta = event.delta;
-            if (delta?.type === 'reasoning-delta' && typeof delta.reasoning === 'string' && delta.reasoning) {
-                accumulator.thinkingText += delta.reasoning;
+        if (!this.isAsyncIterable(message.reasoning)) return;
+        for await (const delta of message.reasoning) {
+            await this.throwIfAborted(callbacks.signal);
+            if (typeof delta === 'string' && delta) {
+                accumulator.thinkingText += delta;
                 accumulator.thinkingOperationId ||= `thinking:${messageKey}`;
                 await callbacks.onStreamEvent({
                     type: 'operation',
@@ -1491,9 +1505,23 @@ export class AgentRuntimeController implements vscode.Disposable {
                     body: accumulator.thinkingText,
                     startedAt: Date.now(),
                 });
-                return;
             }
-            if (delta?.type === 'text-delta' && typeof delta.text === 'string' && delta.text) {
+        }
+    }
+
+    private async consumeDeepAgentV3MessageText(
+        message: { text?: AsyncIterable<string> },
+        messageKey: string,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(message.text)) return;
+        for await (const delta of message.text) {
+            await this.throwIfAborted(callbacks.signal);
+            if (typeof delta === 'string' && delta) {
                 if (accumulator.thinkingText) {
                     await callbacks.onStreamEvent({
                         type: 'operation',
@@ -1508,28 +1536,25 @@ export class AgentRuntimeController implements vscode.Disposable {
                     accumulator.thinkingText = '';
                     accumulator.thinkingOperationId = undefined;
                 }
-                accumulator.responseText += delta.text;
-                await callbacks.onStreamEvent({ type: 'text-delta', delta: delta.text });
-                return;
+                accumulator.responseText += delta;
+                await callbacks.onStreamEvent({ type: 'text-delta', delta });
             }
         }
-        if (event.event === 'usage' || event.event === 'message-start' || event.event === 'message-finish') {
-            const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
+    }
+
+    private async consumeDeepAgentV3MessageUsage(
+        message: { usage?: AsyncIterable<any> },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(message.usage)) return;
+        for await (const usage of message.usage) {
+            await this.throwIfAborted(callbacks.signal);
+            const usageEvent = this.contextUsageEventFromUsage(usage, callbacks.contextWindowTokens);
             if (usageEvent) await callbacks.onStreamEvent(usageEvent);
-        }
-        if (event.event === 'message-finish' && accumulator.thinkingText) {
-            await callbacks.onStreamEvent({
-                type: 'operation',
-                operationId: accumulator.thinkingOperationId || `thinking:${messageKey}`,
-                label: 'Thinking',
-                category: 'thinking',
-                status: 'done',
-                body: accumulator.thinkingText,
-                startedAt: Date.now(),
-                endedAt: Date.now(),
-            });
-            accumulator.thinkingText = '';
-            accumulator.thinkingOperationId = undefined;
         }
     }
 
