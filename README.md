@@ -252,6 +252,10 @@ n8nac convert-batch workflows/ --format typescript
 - **`n8n-manager`**: local managed instances, Docker lifecycle, tunnels, and machine-local secrets.
 - **Skills and MCP**: grounded n8n knowledge for agents.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=EtienneLescot/n8n-as-code&type=date&legend=top-left)](https://www.star-history.com/#EtienneLescot/n8n-as-code&type=date&legend=top-left)
+
 ## Contributing
 
 Contributions welcome.
