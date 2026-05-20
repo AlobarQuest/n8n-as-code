@@ -185,6 +185,18 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     }
 });
 
+test('Agent runtime: LangGraph checkpoints are sharded by thread', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("'langgraph-checkpoints-v2'"), 'Runtime checkpoints must be stored in the sharded v2 directory');
+    assert.ok(source.includes('flushThread(threadId'), 'Checkpoint writes must flush only the active thread shard');
+    assert.ok(source.includes('version: 2'), 'Shard payloads must use the v2 checkpoint storage format');
+    assert.ok(source.includes('allowLegacy: Boolean(checkpointId)'), 'Legacy monolith migration should only happen for explicit checkpoint restores');
+    assert.ok(!source.includes('storage: this.storage,\n                                writes: this.writes'), 'Checkpoint writes must not rewrite one global monolithic JSON file');
+});
+
 test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
     const fs = require('node:fs');
     const path = require('node:path');

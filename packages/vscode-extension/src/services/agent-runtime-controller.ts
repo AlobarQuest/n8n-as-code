@@ -3337,7 +3337,9 @@ export class AgentRuntimeController implements vscode.Disposable {
             this.checkpointerPromise = (async () => {
                 const checkpointsDir = path.join(this._context.globalStorageUri.fsPath, 'agent-sessions');
                 await fs.promises.mkdir(checkpointsDir, { recursive: true });
-                const checkpointPath = path.join(checkpointsDir, 'langgraph-checkpoints.json');
+                const legacyCheckpointPath = path.join(checkpointsDir, 'langgraph-checkpoints.json');
+                const checkpointRoot = path.join(checkpointsDir, 'langgraph-checkpoints-v2');
+                await fs.promises.mkdir(checkpointRoot, { recursive: true });
                 const checkpointModule = await importRuntimeModule('@langchain/langgraph-checkpoint');
                 const BaseCheckpointSaver = checkpointModule.BaseCheckpointSaver as new () => any;
                 const copyCheckpoint = checkpointModule.copyCheckpoint as (checkpoint: Record<string, unknown>) => Record<string, unknown>;
@@ -3359,26 +3361,102 @@ export class AgentRuntimeController implements vscode.Disposable {
                     return { threadId, checkpointNamespace, checkpointId };
                 };
 
-                class FileCheckpointSaver extends BaseCheckpointSaver {
-                    private storage: CheckpointStorage = {};
-                    private writes: CheckpointWrites = {};
-                    private flushQueue: Promise<void> = Promise.resolve();
-                    private flushCounter = 0;
+                type ThreadCheckpointData = {
+                    storage: CheckpointStorage;
+                    writes: CheckpointWrites;
+                    flushQueue: Promise<void>;
+                    flushCounter: number;
+                };
 
-                    constructor(private readonly filePath: string) {
+                class FileCheckpointSaver extends BaseCheckpointSaver {
+                    private readonly threads = new Map<string, ThreadCheckpointData>();
+
+                    constructor(
+                        private readonly rootDir: string,
+                        private readonly legacyFilePath: string,
+                        private readonly log: (message: string) => void,
+                    ) {
                         super();
-                        this.load();
                     }
 
-                    private load(): void {
+                    private threadFilePath(threadId: string): string {
+                        return path.join(this.rootDir, encodeURIComponent(threadId), 'state.json');
+                    }
+
+                    private createEmptyThreadData(): ThreadCheckpointData {
+                        return {
+                            storage: {},
+                            writes: {},
+                            flushQueue: Promise.resolve(),
+                            flushCounter: 0,
+                        };
+                    }
+
+                    private loadThread(threadId: string, options: { allowLegacy?: boolean } = {}): ThreadCheckpointData {
+                        const cached = this.threads.get(threadId);
+                        if (cached) return cached;
+
+                        const filePath = this.threadFilePath(threadId);
+                        let data = this.loadShardedThread(filePath);
+                        if (!data && options.allowLegacy) {
+                            data = this.loadLegacyThread(threadId);
+                            if (data) {
+                                const checkpointCount = Object.values(data.storage[threadId] ?? {})
+                                    .reduce((count, checkpoints) => count + Object.keys(checkpoints).length, 0);
+                                this.log(`[n8n-agent-debug] migrated legacy langgraph checkpoints threadId=${threadId} checkpoints=${checkpointCount} writes=${Object.keys(data.writes).length}`);
+                                void this.flushThread(threadId, data).catch((error: any) => {
+                                    this.log(`[n8n-agent] Failed to persist migrated langgraph checkpoints threadId=${threadId}: ${error?.message || String(error)}`);
+                                });
+                            }
+                        }
+                        data ??= this.createEmptyThreadData();
+                        this.threads.set(threadId, data);
+                        return data;
+                    }
+
+                    private loadShardedThread(filePath: string): ThreadCheckpointData | undefined {
                         try {
-                            const raw = fs.readFileSync(this.filePath, 'utf8');
+                            const raw = fs.readFileSync(filePath, 'utf8');
                             const data = JSON.parse(raw);
-                            this.storage = data.storage && typeof data.storage === 'object' ? data.storage : {};
-                            this.writes = data.writes && typeof data.writes === 'object' ? data.writes : {};
+                            return {
+                                storage: data.storage && typeof data.storage === 'object' ? data.storage : {},
+                                writes: data.writes && typeof data.writes === 'object' ? data.writes : {},
+                                flushQueue: Promise.resolve(),
+                                flushCounter: 0,
+                            };
                         } catch {
-                            this.storage = {};
-                            this.writes = {};
+                            return undefined;
+                        }
+                    }
+
+                    private loadLegacyThread(threadId: string): ThreadCheckpointData | undefined {
+                        if (!fs.existsSync(this.legacyFilePath)) return undefined;
+                        const startedAt = Date.now();
+                        try {
+                            const raw = fs.readFileSync(this.legacyFilePath, 'utf8');
+                            const legacy = JSON.parse(raw);
+                            const storageForThread = legacy.storage?.[threadId];
+                            const writesForThread: CheckpointWrites = {};
+                            for (const [key, value] of Object.entries((legacy.writes || {}) as CheckpointWrites)) {
+                                try {
+                                    if (parseKey(key).threadId === threadId) {
+                                        writesForThread[key] = value;
+                                    }
+                                } catch {
+                                    // Ignore malformed legacy write keys.
+                                }
+                            }
+                            this.log(`[n8n-agent-debug] loaded legacy langgraph checkpoint file threadId=${threadId} elapsedMs=${Date.now() - startedAt} sizeBytes=${raw.length}`);
+                            if (!storageForThread && !Object.keys(writesForThread).length) return undefined;
+                            return {
+                                storage: storageForThread ? { [threadId]: storageForThread } : {},
+                                writes: writesForThread,
+                                flushQueue: Promise.resolve(),
+                                flushCounter: 0,
+                            };
+                        } catch (error: any) {
+                            this.log(`[n8n-agent] Failed to load legacy langgraph checkpoints threadId=${threadId}: ${error?.message || String(error)}`);
+                            return undefined;
                         }
                     }
 
@@ -3409,19 +3487,25 @@ export class AgentRuntimeController implements vscode.Disposable {
                         return new TextDecoder().decode(Uint8Array.from(bytes));
                     }
 
-                    private async flush(): Promise<void> {
-                        const flushTask = this.flushQueue.then(async () => {
-                            await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true });
-                            const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.${this.flushCounter++}.tmp`;
+                    private async flushThread(threadId: string, threadData: ThreadCheckpointData): Promise<void> {
+                        const filePath = this.threadFilePath(threadId);
+                        const flushStartedAt = Date.now();
+                        const flushTask = threadData.flushQueue.then(async () => {
+                            await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+                            const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${threadData.flushCounter++}.tmp`;
                             const payload = JSON.stringify({
-                                version: 1,
-                                storage: this.storage,
-                                writes: this.writes,
+                                version: 2,
+                                storage: threadData.storage,
+                                writes: threadData.writes,
                             });
                             await fs.promises.writeFile(tmpPath, payload, 'utf8');
-                            await fs.promises.rename(tmpPath, this.filePath);
+                            await fs.promises.rename(tmpPath, filePath);
+                            const elapsedMs = Date.now() - flushStartedAt;
+                            if (elapsedMs > 500) {
+                                this.log(`[n8n-agent-debug] langgraph checkpoint shard flush slow threadId=${threadId} elapsedMs=${elapsedMs} sizeBytes=${payload.length}`);
+                            }
                         });
-                        this.flushQueue = flushTask.catch(() => undefined);
+                        threadData.flushQueue = flushTask.catch(() => undefined);
                         await flushTask;
                     }
 
@@ -3431,18 +3515,19 @@ export class AgentRuntimeController implements vscode.Disposable {
                         if (!threadId) return undefined;
 
                         let checkpointId = getCheckpointId(config);
+                        const threadData = this.loadThread(threadId, { allowLegacy: Boolean(checkpointId) });
                         if (!checkpointId) {
-                            const checkpoints = this.storage[threadId]?.[checkpointNamespace];
+                            const checkpoints = threadData.storage[threadId]?.[checkpointNamespace];
                             if (!checkpoints) return undefined;
                             checkpointId = Object.keys(checkpoints).sort((a, b) => b.localeCompare(a))[0];
                         }
 
-                        const saved = this.storage[threadId]?.[checkpointNamespace]?.[checkpointId];
+                        const saved = threadData.storage[threadId]?.[checkpointNamespace]?.[checkpointId];
                         if (!saved) return undefined;
 
                         const [checkpoint, metadata, parentCheckpointId] = saved;
                         const key = generateKey(threadId, checkpointNamespace, checkpointId);
-                        const pendingWrites = await Promise.all(Object.values(this.writes[key] || {}).map(async ([taskId, channel, value]) => [
+                        const pendingWrites = await Promise.all(Object.values(threadData.writes[key] || {}).map(async ([taskId, channel, value]) => [
                             taskId,
                             channel,
                             await this.serde.loadsTyped('json', this.decodeLegacySerializedValue(value)),
@@ -3461,14 +3546,19 @@ export class AgentRuntimeController implements vscode.Disposable {
 
                     async *list(config: Record<string, any>, options?: { before?: Record<string, any>; limit?: number; filter?: Record<string, unknown> }): AsyncIterable<any> {
                         let { before, limit, filter } = options ?? {};
-                        const threadIds = config.configurable?.thread_id ? [config.configurable.thread_id] : Object.keys(this.storage);
+                        const threadIds = config.configurable?.thread_id
+                            ? [config.configurable.thread_id]
+                            : fs.existsSync(this.rootDir)
+                                ? fs.readdirSync(this.rootDir).map((entry) => decodeURIComponent(entry))
+                                : [];
                         const configCheckpointNamespace = config.configurable?.checkpoint_ns;
                         const configCheckpointId = config.configurable?.checkpoint_id;
 
                         for (const threadId of threadIds) {
-                            for (const checkpointNamespace of Object.keys(this.storage[threadId] ?? {})) {
+                            const threadData = this.loadThread(threadId, { allowLegacy: Boolean(configCheckpointId) });
+                            for (const checkpointNamespace of Object.keys(threadData.storage[threadId] ?? {})) {
                                 if (configCheckpointNamespace !== undefined && checkpointNamespace !== configCheckpointNamespace) continue;
-                                const checkpoints = this.storage[threadId]?.[checkpointNamespace] ?? {};
+                                const checkpoints = threadData.storage[threadId]?.[checkpointNamespace] ?? {};
                                 const sortedCheckpoints = Object.entries(checkpoints).sort((a, b) => b[0].localeCompare(a[0]));
                                 for (const [checkpointId, [checkpoint, metadataStr, parentCheckpointId]] of sortedCheckpoints) {
                                     if (configCheckpointId && checkpointId !== configCheckpointId) continue;
@@ -3480,7 +3570,7 @@ export class AgentRuntimeController implements vscode.Disposable {
                                         limit -= 1;
                                     }
                                     const key = generateKey(threadId, checkpointNamespace, checkpointId);
-                                    const pendingWrites = await Promise.all(Object.values(this.writes[key] || {}).map(async ([taskId, channel, value]) => [
+                                    const pendingWrites = await Promise.all(Object.values(threadData.writes[key] || {}).map(async ([taskId, channel, value]) => [
                                         taskId,
                                         channel,
                                         await this.serde.loadsTyped('json', this.decodeLegacySerializedValue(value)),
@@ -3507,18 +3597,19 @@ export class AgentRuntimeController implements vscode.Disposable {
                         if (!threadId) {
                             throw new Error('Failed to put checkpoint. The passed RunnableConfig is missing configurable.thread_id.');
                         }
-                        this.storage[threadId] ??= {};
-                        this.storage[threadId][checkpointNamespace] ??= {};
+                        const threadData = this.loadThread(threadId);
+                        threadData.storage[threadId] ??= {};
+                        threadData.storage[threadId][checkpointNamespace] ??= {};
                         const [[, serializedCheckpoint], [, serializedMetadata]] = await Promise.all([
                             this.serde.dumpsTyped(preparedCheckpoint),
                             this.serde.dumpsTyped(metadata),
                         ]);
-                        this.storage[threadId][checkpointNamespace][checkpoint.id] = [
+                        threadData.storage[threadId][checkpointNamespace][checkpoint.id] = [
                             this.encodeSerializedValue(serializedCheckpoint),
                             this.encodeSerializedValue(serializedMetadata),
                             config.configurable?.checkpoint_id,
                         ];
-                        await this.flush();
+                        await this.flushThread(threadId, threadData);
                         return { configurable: { thread_id: threadId, checkpoint_ns: checkpointNamespace, checkpoint_id: checkpoint.id } };
                     }
 
@@ -3533,30 +3624,27 @@ export class AgentRuntimeController implements vscode.Disposable {
                             throw new Error('Failed to put writes. The passed RunnableConfig is missing configurable.checkpoint_id.');
                         }
                         const outerKey = generateKey(threadId, checkpointNamespace, checkpointId);
-                        const existingWrites = this.writes[outerKey];
-                        this.writes[outerKey] ??= {};
+                        const threadData = this.loadThread(threadId);
+                        const existingWrites = threadData.writes[outerKey];
+                        threadData.writes[outerKey] ??= {};
                         await Promise.all(writes.map(async ([channel, value], idx) => {
                             const [, serializedValue] = await this.serde.dumpsTyped(value);
                             const writeIndex = writesIndexMap[channel] ?? idx;
                             const innerKey = `${taskId},${writeIndex}`;
                             if (writeIndex >= 0 && existingWrites && innerKey in existingWrites) return;
-                            this.writes[outerKey][innerKey] = [taskId, channel, this.encodeSerializedValue(serializedValue)];
+                            threadData.writes[outerKey][innerKey] = [taskId, channel, this.encodeSerializedValue(serializedValue)];
                         }));
-                        await this.flush();
+                        await this.flushThread(threadId, threadData);
                     }
 
                     async deleteThread(threadId: string): Promise<void> {
-                        delete this.storage[threadId];
-                        for (const key of Object.keys(this.writes)) {
-                            if (parseKey(key).threadId === threadId) {
-                                delete this.writes[key];
-                            }
-                        }
-                        await this.flush();
+                        const threadData = this.createEmptyThreadData();
+                        this.threads.set(threadId, threadData);
+                        await this.flushThread(threadId, threadData);
                     }
                 }
 
-                return new FileCheckpointSaver(checkpointPath) as RuntimeCheckpointer;
+                return new FileCheckpointSaver(checkpointRoot, legacyCheckpointPath, (message) => this.outputChannel.appendLine(message)) as RuntimeCheckpointer;
             })();
         }
         return this.checkpointerPromise;
