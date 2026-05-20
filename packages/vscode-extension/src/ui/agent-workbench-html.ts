@@ -7,6 +7,8 @@ export interface AgentWorkbenchHtmlInput {
     providerModelLabel: string;
 }
 
+export const AGENT_WORKBENCH_BUILD = 'awb-2026.05.20.3-finalize-telemetry';
+
 function escapeHtml(value: string): string {
     return value
         .replace(/&/g, '&amp;')
@@ -33,6 +35,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const initialWorkflowLabel = hasWorkflow ? safeWorkflowName : 'No workflow context';
     const safeWorkflowUrl = escapeHtml(input.workflowUrl || '');
     const safeProviderModelLabel = escapeHtml(input.providerModelLabel);
+    const safeWorkbenchBuild = escapeHtml(AGENT_WORKBENCH_BUILD);
     const workflowIdJs = JSON.stringify(input.workflowId);
     const workflowUrlJs = JSON.stringify(input.workflowUrl || '');
     const workflowReloadUrlJs = JSON.stringify(input.workflowReloadUrl || input.workflowUrl || '');
@@ -394,6 +397,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .workbench-build {
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1;
+            opacity: .72;
+            flex: 0 0 auto;
+            user-select: text;
         }
         .context-actions {
             display: flex;
@@ -759,6 +770,16 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 12px;
         }
         .pending-prompt.open { display: grid; }
+        .runtime-finalizing {
+            display: none;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.25;
+            padding: 0 2px;
+        }
+        .runtime-finalizing.open {
+            display: block;
+        }
         .pending-prompt-main {
             display: flex;
             gap: 7px;
@@ -1171,6 +1192,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                         <div class="chat-title-row">
                             <div class="chat-title">Workflow Architect</div>
                             <div id="conversation-title" class="conversation-title"></div>
+                            <div class="workbench-build" title="Agent Workbench build">${safeWorkbenchBuild}</div>
                         </div>
                         <div class="context-actions">
                             <div id="context-pill" class="context-pill" title="Context usage">
@@ -1196,6 +1218,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 <div class="composer-input">
                     <div id="context-badges" class="context-badges"></div>
                     <div id="pending-prompt" class="pending-prompt" aria-live="polite"></div>
+                    <div id="runtime-finalizing" class="runtime-finalizing" aria-live="polite">Finalizing context before the next run...</div>
                     <div id="mention-menu" class="mention-menu"></div>
                     <textarea id="prompt" placeholder="Ask the n8n agent what to do with this workflow..." rows="2"></textarea>
                     <div class="composer-toolbar">
@@ -1310,6 +1333,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         const form = document.getElementById('composer');
         const promptInput = document.getElementById('prompt');
         const pendingPromptEl = document.getElementById('pending-prompt');
+        const runtimeFinalizingEl = document.getElementById('runtime-finalizing');
         const sendButton = document.getElementById('send');
         const stopButton = document.getElementById('stop');
         const selectModelButton = document.getElementById('select-model');
@@ -1360,6 +1384,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             checkpointSaveButton.disabled = running;
             compactContextButton.disabled = running;
             if (runIndicator) runIndicator.classList.toggle('active', running);
+            renderRuntimeFinalizing();
             renderCheckpoints();
             renderFeed();
         }
@@ -1385,6 +1410,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 renderPendingPrompt();
                 vscode.postMessage({ type: 'agent.steer', text: pendingPrompt.text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
             });
+        }
+
+        function renderRuntimeFinalizing() {
+            if (!runtimeFinalizingEl) return;
+            runtimeFinalizingEl.classList.toggle('open', Boolean(runtimeFinalizing));
         }
 
         function escapeText(value) {
@@ -2632,6 +2662,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
                 runtimeFinalizing = Boolean(event.runtimeFinalizing);
                 setRunning(false);
+                renderRuntimeFinalizing();
             } else if (event.type === 'operation') {
                 const idx = findMatchingPendingOperationIndex(entries, event.operationId, event.label, event.category);
                 const existing = idx >= 0 && entries[idx] && entries[idx].kind === 'operation' ? entries[idx] : null;
@@ -2855,6 +2886,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (message.type === 'agent.status') {
                 if (message.status === 'idle') runtimeFinalizing = false;
                 setRunning(message.status === 'running');
+                renderRuntimeFinalizing();
                 return;
             }
 

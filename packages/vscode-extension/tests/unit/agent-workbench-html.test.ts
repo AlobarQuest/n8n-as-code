@@ -35,7 +35,7 @@ test('Agent Workbench HTML: forwards node detail context to the agent', () => {
 });
 
 test('Agent Workbench HTML: renders provider/session controls', () => {
-    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const { AGENT_WORKBENCH_BUILD, buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({
         workflowId: 'wf-1',
         workflowName: 'Workflow 1',
@@ -61,6 +61,7 @@ test('Agent Workbench HTML: renders provider/session controls', () => {
     assert.ok(html.includes('history-overlay'), 'Must render conversation history as a modal overlay');
     assert.ok(html.includes("type: 'agent.ready'"), 'Must request initial state from the extension host');
     assert.ok(html.includes('openai / gpt-5.4'), 'Must render selected provider/model label');
+    assert.ok(html.includes(AGENT_WORKBENCH_BUILD), 'Must render a visible Workbench build stamp');
     assert.ok(!html.includes('Agent workbench is ready. Ask for a workflow inspection'), 'Must remove initial system message');
 });
 
@@ -107,6 +108,7 @@ test('Agent Workbench HTML: final stream event releases composer while runtime c
 
     assert.ok(html.includes("event.type === 'final'"), 'Must handle the final stream event');
     assert.ok(html.includes('runtimeFinalizing = Boolean(event.runtimeFinalizing);'), 'Must remember when DeepAgents is still finalizing after the visible answer');
+    assert.ok(html.includes('Finalizing context before the next run...'), 'Must explain when the native runtime is finalizing after the visible answer');
     assert.ok(html.includes('setRunning(false);'), 'Must unlock the composer as soon as the final response arrives');
     assert.ok(html.includes('if (isRunning || runtimeFinalizing)'), 'Must queue immediate follow-up prompts while the native runtime context finalizes');
     assert.ok(html.includes("if (message.status === 'idle') runtimeFinalizing = false;"), 'Must clear runtime finalization once the host posts idle');
@@ -156,6 +158,8 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     assert.ok(source.includes('extractContentBlockText(content)'), 'Must finalize visible answers from the completed text block');
     assert.ok(source.includes('onFinalCandidate'), 'Must emit a visible final response from native message projections');
     assert.ok(source.includes('runtimeFinalizing'), 'Must distinguish visible completion from authoritative run.output completion');
+    assert.ok(source.includes('deepagents.v3.visible-final'), 'Must log when the visible answer is complete');
+    assert.ok(source.includes('deepagents.v3.run.output resolved'), 'Must log when the authoritative run output resolves');
     assert.ok(source.includes('visibleDone'), 'Must let follow-up prompts queue once the visible answer is complete');
 
     const forbiddenLegacyStreamMarkers = [

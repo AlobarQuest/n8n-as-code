@@ -770,7 +770,7 @@ class WorkbenchSessionService implements SessionServiceHandle {
 }
 
 export class AgentRuntimeController implements vscode.Disposable {
-    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer'; visibleDone?: boolean } | undefined;
+    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer'; visibleDone?: boolean; runStartedAt?: number; visibleFinalAt?: number } | undefined;
     private readonly stoppedRuns = new WeakSet<AbortController>();
     private queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
     private cachedAgentHandle: { key: string; handle: any } | undefined;
@@ -1107,6 +1107,8 @@ export class AgentRuntimeController implements vscode.Disposable {
     async sendPrompt(input: AgentPromptInput, postMessage: AgentWorkbenchPostMessage): Promise<AgentRunResult> {
         if (this.activeRun) {
             if (this.activeRun.visibleDone) {
+                const waitMs = this.activeRun.visibleFinalAt ? Date.now() - this.activeRun.visibleFinalAt : undefined;
+                this.outputChannel.appendLine(`[n8n-agent-debug] prompt queued while DeepAgents finalizes sessionId=${this.activeRun.sessionId} waitAfterVisibleMs=${waitMs ?? 'unknown'} reason=pending`);
                 return this.queuePrompt(input, postMessage, 'pending');
             }
             await postMessage({
@@ -1145,7 +1147,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         };
 
         const abortController = new AbortController();
-        this.activeRun = { abortController, sessionId: activeRecord.id };
+        this.activeRun = { abortController, sessionId: activeRecord.id, runStartedAt: Date.now() };
 
         const derivedTitle = activeRecord.title === 'New conversation'
             ? sessions.deriveSessionTitle(prompt, this.getDefaultSessionTitle(input.workflowName))
@@ -1181,6 +1183,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             this.writeSessionEntries(sessions.service, activeRecord.id, entries);
             if (!this.queuedPrompt && this.activeRun?.abortController === abortController) {
                 this.activeRun = undefined;
+                this.outputChannel.appendLine(`[n8n-agent-debug] agent host idle sessionId=${activeRecord.id}`);
                 await postMessage({ type: 'agent.status', status: 'idle' });
                 postedIdle = true;
             }
@@ -1193,6 +1196,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             }
             await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
             await postMessage({ type: 'agent.done' });
+            this.outputChannel.appendLine(`[n8n-agent-debug] agent host done sessionId=${activeRecord.id} queuedPrompt=${String(Boolean(this.queuedPrompt))}`);
             result = { workflowChanged: runResult.workflowChanged };
         } catch (error: any) {
             const message = error?.message || String(error);
@@ -1250,6 +1254,8 @@ export class AgentRuntimeController implements vscode.Disposable {
             return this.sendPrompt(input, postMessage);
         }
         this.queuedPrompt = { input: { ...input, prompt }, reason };
+        const waitMs = this.activeRun.visibleFinalAt ? Date.now() - this.activeRun.visibleFinalAt : undefined;
+        this.outputChannel.appendLine(`[n8n-agent-debug] queuePrompt accepted sessionId=${this.activeRun.sessionId} reason=${reason} visibleDone=${String(Boolean(this.activeRun.visibleDone))} waitAfterVisibleMs=${waitMs ?? 'unknown'}`);
         if (reason === 'steer') {
             this.activeRun.abortReason = 'steer';
             await postMessage({ type: 'agent.status', status: 'stopping', detail: 'Steering current run...' });
@@ -1367,11 +1373,13 @@ export class AgentRuntimeController implements vscode.Disposable {
         signal: AbortSignal,
         contextWindowTokens: number,
     ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean }> {
+        const runStartedAt = Date.now();
         const accumulator = this.createStreamAccumulator();
         let entries = [...initialEntries];
         let fileModificationDetected = false;
         let visibleFinalEmitted = false;
         let authoritativeFinalEmitted = false;
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run started sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'}`);
         const syncEntries = () => {
             if (!input.sessionId) return;
             this.writeSessionEntries(service, input.sessionId, entries);
@@ -1396,7 +1404,14 @@ export class AgentRuntimeController implements vscode.Disposable {
             const activeRun = this.activeRun;
             if (activeRun && activeRun.sessionId === input.sessionId) {
                 activeRun.visibleDone = true;
+                if (runtimeFinalizing) {
+                    activeRun.visibleFinalAt = Date.now();
+                }
             }
+            const elapsedMs = Date.now() - runStartedAt;
+            const waitAfterVisibleMs = !runtimeFinalizing && activeRun?.visibleFinalAt ? Date.now() - activeRun.visibleFinalAt : undefined;
+            const finalLogKind = runtimeFinalizing ? 'deepagents.v3.visible-final' : 'deepagents.v3.authoritative-final';
+            this.outputChannel.appendLine(`[n8n-agent-debug] ${finalLogKind} sessionId=${input.sessionId || 'none'} elapsedMs=${elapsedMs} waitAfterVisibleMs=${waitAfterVisibleMs ?? 'n/a'} responseChars=${response.length} finalState=${finalState}`);
             const finalEvent: AgentStreamEvent = {
                 type: 'final',
                 sessionId: input.sessionId || '',
@@ -1409,7 +1424,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             await postMessage({ type: 'agent.streamEvent', event: finalEvent });
         };
 
-        void Promise.allSettled([
+        const projectionConsumers = Promise.allSettled([
             this.consumeDeepAgentV3MessageProjection(run, accumulator, {
                 signal,
                 contextWindowTokens,
@@ -1420,7 +1435,9 @@ export class AgentRuntimeController implements vscode.Disposable {
                 signal,
                 onStreamEvent: emitStreamEvent,
             }),
-        ]).then((results) => {
+        ]);
+        void projectionConsumers.then((results) => {
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.projections settled sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt}`);
             for (const result of results) {
                 if (result.status === 'rejected' && !signal.aborted) {
                     this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 projection consumer failed: ${result.reason?.message || String(result.reason)}`);
@@ -1428,7 +1445,9 @@ export class AgentRuntimeController implements vscode.Disposable {
             }
         });
 
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run.output await-start sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt}`);
         const finalOutput = await this.raceAbort(Promise.resolve(run.output), signal);
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run.output resolved sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt} output=${this.summarizeAgentOutput(finalOutput)}`);
 
         await this.throwIfAborted(signal);
         if (accumulator.thinkingText) {
@@ -1453,7 +1472,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         if (fileModificationDetected) {
             this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
         }
-        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)}`);
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)} elapsedMs=${Date.now() - runStartedAt}`);
         return { entries, workflowChanged: fileModificationDetected };
     }
 
@@ -2283,6 +2302,16 @@ export class AgentRuntimeController implements vscode.Disposable {
     private extractMessageTextFromOutput(output: unknown): string {
         if (!this.isRecord(output)) return '';
         return this.sanitizeAssistantText(this.extractMessageTextContent(output.content));
+    }
+
+    private summarizeAgentOutput(output: unknown): string {
+        if (!this.isRecord(output)) return typeof output;
+        const keys = Object.keys(output).slice(0, 8).join(',');
+        const messages = Array.isArray(output.messages) ? output.messages : [];
+        const last = messages[messages.length - 1];
+        const lastRole = this.isRecord(last) ? String(last.role || last._getType || last.type || last.name || 'unknown') : 'none';
+        const lastTextChars = this.isRecord(last) ? this.extractMessageTextContent(last.content).length : 0;
+        return `keys=${keys || 'none'} messages=${messages.length} lastRole=${lastRole} lastTextChars=${lastTextChars}`;
     }
 
     private readMessageEventIndex(event: Record<string, unknown>): number | undefined {
