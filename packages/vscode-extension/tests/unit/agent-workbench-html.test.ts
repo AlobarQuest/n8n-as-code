@@ -190,7 +190,7 @@ test('Agent runtime: LangGraph checkpoints are sharded by thread', () => {
     const path = require('node:path');
     const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
 
-    assert.ok(source.includes("'langgraph-checkpoints-v2'"), 'Runtime checkpoints must be stored in the sharded v2 directory');
+    assert.ok(source.includes("'langgraph-checkpoints-sharded'"), 'Runtime checkpoints must be stored in the sharded directory');
     assert.ok(source.includes('flushThread(threadId'), 'Checkpoint writes must flush only the active thread shard');
     assert.ok(source.includes('version: 2'), 'Shard payloads must use the v2 checkpoint storage format');
     assert.ok(source.includes('allowLegacy: Boolean(checkpointId)'), 'Legacy monolith migration should only happen for explicit checkpoint restores');

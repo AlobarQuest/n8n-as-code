@@ -7,7 +7,7 @@ export interface AgentWorkbenchHtmlInput {
     providerModelLabel: string;
 }
 
-export const AGENT_WORKBENCH_BUILD = 'awb-2026.05.20.4-sharded-checkpoints';
+export const AGENT_WORKBENCH_BUILD = 'awb-2026.05.20.5-latency-probe';
 
 function escapeHtml(value: string): string {
     return value

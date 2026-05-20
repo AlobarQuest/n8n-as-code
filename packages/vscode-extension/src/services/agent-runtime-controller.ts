@@ -1318,11 +1318,17 @@ export class AgentRuntimeController implements vscode.Disposable {
             };
         }
 
+        const setupStartedAt = Date.now();
         const handle = await this.getDeepAgentHandle(providerConfig, input);
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent handle ready sessionId=${input.sessionId || 'none'} provider=${providerConfig.provider} model=${providerConfig.model || 'default'} elapsedMs=${Date.now() - setupStartedAt}`);
         const sessions = await this.getSessionRuntime();
         sessions.service.setCheckpointer(handle.checkpointer);
         const agent = handle.agent;
-        const messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
+        const promptStartedAt = Date.now();
+        const invocationPrompt = await this.buildInvocationPrompt(input);
+        const nodeContextCount = this.normalizeNodeContexts(input.nodeContexts || input.nodeContext).length;
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent prompt built sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - promptStartedAt} promptChars=${invocationPrompt.length} nodeContexts=${nodeContextCount} workflowAttached=${String(Boolean(input.workflowId))}`);
+        const messages = [{ role: 'user', content: invocationPrompt }];
         const contextWindowTokens = await this.resolveContextWindow(providerConfig.provider, providerConfig.model, providerConfig.apiKey, providerConfig.baseUrl);
         const config = {
             ...sessions.service.buildSessionConfig(input.sessionId || ''),
@@ -1332,7 +1338,10 @@ export class AgentRuntimeController implements vscode.Disposable {
         let entries = [...initialEntries];
 
         if (typeof (agent as any).streamEvents === 'function') {
+            const streamStartedAt = Date.now();
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.streamEvents start sessionId=${input.sessionId || 'none'} promptChars=${invocationPrompt.length}`);
             const run = await this.raceAbort(Promise.resolve((agent as any).streamEvents({ messages }, { ...config, version: 'v3' })), signal);
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.streamEvents resolved sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - streamStartedAt}`);
             if (!this.isDeepAgentV3Run(run)) {
                 throw new Error('DeepAgents v3 stream did not return a run stream.');
             }
@@ -1379,6 +1388,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         let fileModificationDetected = false;
         let visibleFinalEmitted = false;
         let authoritativeFinalEmitted = false;
+        const loggedProjectionEvents = new Set<string>();
         this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run started sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'}`);
         const syncEntries = () => {
             if (!input.sessionId) return;
@@ -1430,6 +1440,11 @@ export class AgentRuntimeController implements vscode.Disposable {
                 contextWindowTokens,
                 onStreamEvent: emitStreamEvent,
                 onFinalCandidate: async (response) => emitFinalEvent(response, 'done', true),
+                onProjectionEvent: (eventName, detail) => {
+                    if (loggedProjectionEvents.has(eventName)) return;
+                    loggedProjectionEvents.add(eventName);
+                    this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.message-event sessionId=${input.sessionId || 'none'} event=${eventName} elapsedMs=${Date.now() - runStartedAt}${detail ? ` ${detail}` : ''}`);
+                },
             }),
             this.consumeDeepAgentV3ToolCallProjection(run, {
                 signal,
@@ -1484,6 +1499,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
             onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
         if (!this.isAsyncIterable(run.messages)) return;
@@ -1501,6 +1517,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
             onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
         if (this.isAsyncIterable(message)) {
@@ -1543,6 +1560,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
             onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
         // `message.text` resolves at message-finish; the UI needs the completed
@@ -1576,6 +1594,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             if (typeof blockIndex === 'number') {
                 blockText.set(blockIndex, `${blockText.get(blockIndex) || ''}${delta}`);
             }
+            callbacks.onProjectionEvent?.('text-delta', `chars=${delta.length} totalChars=${messageText.length}`);
             await callbacks.onStreamEvent({ type: 'text-delta', delta });
         };
         const emitReasoningDelta = async (delta: string) => {
@@ -1604,6 +1623,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             await this.throwIfAborted(callbacks.signal);
             if (!this.isRecord(event)) continue;
             const eventName = String(event.event || '');
+            callbacks.onProjectionEvent?.(eventName);
             if (eventName === 'message-start') {
                 const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
                 if (usageEvent) await callbacks.onStreamEvent(usageEvent);
@@ -1675,12 +1695,14 @@ export class AgentRuntimeController implements vscode.Disposable {
         callbacks: {
             signal: AbortSignal;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
         if (!this.isAsyncIterable(message.reasoning)) return;
         for await (const delta of message.reasoning) {
             await this.throwIfAborted(callbacks.signal);
             if (typeof delta === 'string' && delta) {
+                callbacks.onProjectionEvent?.('message.reasoning-delta', `chars=${delta.length}`);
                 accumulator.thinkingText += delta;
                 accumulator.thinkingOperationId ||= `thinking:${messageKey}`;
                 await callbacks.onStreamEvent({
@@ -1703,6 +1725,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         callbacks: {
             signal: AbortSignal;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<string> {
         if (!this.isAsyncIterable(message.text)) return '';
@@ -1710,6 +1733,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         for await (const delta of message.text) {
             await this.throwIfAborted(callbacks.signal);
             if (typeof delta === 'string' && delta) {
+                callbacks.onProjectionEvent?.('message.text-delta', `chars=${delta.length}`);
                 if (accumulator.thinkingText) {
                     await callbacks.onStreamEvent({
                         type: 'operation',
@@ -3338,7 +3362,7 @@ export class AgentRuntimeController implements vscode.Disposable {
                 const checkpointsDir = path.join(this._context.globalStorageUri.fsPath, 'agent-sessions');
                 await fs.promises.mkdir(checkpointsDir, { recursive: true });
                 const legacyCheckpointPath = path.join(checkpointsDir, 'langgraph-checkpoints.json');
-                const checkpointRoot = path.join(checkpointsDir, 'langgraph-checkpoints-v2');
+                const checkpointRoot = path.join(checkpointsDir, 'langgraph-checkpoints-sharded');
                 await fs.promises.mkdir(checkpointRoot, { recursive: true });
                 const checkpointModule = await importRuntimeModule('@langchain/langgraph-checkpoint');
                 const BaseCheckpointSaver = checkpointModule.BaseCheckpointSaver as new () => any;
