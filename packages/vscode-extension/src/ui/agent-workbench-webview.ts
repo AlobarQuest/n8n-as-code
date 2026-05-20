@@ -46,6 +46,7 @@ export class AgentWorkbenchWebview {
     private _workflowProviders: AgentWorkbenchWorkflowProviders;
     private _activeSessionId: string | undefined;
     private _onClipboardPasteRequest: ((panel: vscode.WebviewPanel, grantToken: string) => Promise<void>) | undefined;
+    private _stateSequence = 0;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -348,6 +349,13 @@ export class AgentWorkbenchWebview {
             return;
         }
 
+        if (payload.type === 'agent.message.rewind' && typeof payload.sessionId === 'string' && typeof payload.messageId === 'string') {
+            const result = await this._agentRuntime.rewindToUserMessage(payload.sessionId, payload.messageId, this.buildWorkbenchInput());
+            await this.postWorkbenchState(result.state);
+            await this._panel.webview.postMessage({ type: 'agent.messageRewind', prompt: result.prompt });
+            return;
+        }
+
         if (payload.type === 'agent.checkpoint.save' && typeof payload.sessionId === 'string') {
             await this.postWorkbenchState(await this._agentRuntime.saveCheckpoint(payload.sessionId, this.buildWorkbenchInput()));
             return;
@@ -478,11 +486,24 @@ export class AgentWorkbenchWebview {
         };
     }
 
-    private async postWorkbenchState(state?: Awaited<ReturnType<AgentRuntimeController['getWorkbenchState']>>): Promise<void> {
+    private async postWorkbenchState(
+        state?: Awaited<ReturnType<AgentRuntimeController['getWorkbenchState']>>,
+        options: { enrich?: boolean } = {},
+    ): Promise<void> {
+        const enrich = options.enrich !== false;
+        const stateSequence = ++this._stateSequence;
         const nextState = state ?? await this._agentRuntime.getWorkbenchState(this.buildWorkbenchInput());
         this._activeSessionId = nextState.activeSessionId;
-        await this.reconcileWorkflowContext(nextState.workflowContext);
         this._nodeContexts = Array.isArray(nextState.currentNodeContexts) ? nextState.currentNodeContexts : [];
+        if (!enrich) {
+            await this._panel.webview.postMessage({ type: 'agent.state', state: nextState, stateSequence });
+            if (!nextState.isRunning) {
+                void this.postWorkbenchState(undefined, { enrich: true })
+                    .catch((error) => this._outputChannel.appendLine(`[n8n-agent] Background Workbench state enrichment failed: ${error?.message || String(error)}`));
+            }
+            return;
+        }
+        await this.reconcileWorkflowContext(nextState.workflowContext);
         const enrichedState = {
             ...nextState,
             availableWorkflows: await this.getWorkflowOptions(),
@@ -495,12 +516,12 @@ export class AgentWorkbenchWebview {
                 selected: effort === nextState.reasoningEffort,
             })),
         };
-        await this._panel.webview.postMessage({ type: 'agent.state', state: enrichedState });
+        await this._panel.webview.postMessage({ type: 'agent.state', state: enrichedState, stateSequence });
     }
 
     private async postAgentRuntimeMessage(message: AgentWorkbenchMessage): Promise<boolean> {
         if (message.type === 'agent.state') {
-            await this.postWorkbenchState(message.state);
+            await this.postWorkbenchState(message.state, { enrich: false });
             return true;
         }
         return this._panel.webview.postMessage(message);

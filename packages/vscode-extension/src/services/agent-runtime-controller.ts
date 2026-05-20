@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { WorkspaceSnapshotService } from './workspace-snapshot-service.js';
 
 export interface AgentPromptInput {
     prompt: string;
@@ -64,6 +65,12 @@ export interface AgentCompactionSummary {
     fallbackReason?: string;
 }
 
+export interface AgentMessageCheckpointLink {
+    runtimeCheckpointId?: string;
+    workspaceSnapshotId?: string;
+    workbenchCheckpointId: string;
+}
+
 export interface AgentSessionSummary {
     id: string;
     title: string;
@@ -80,7 +87,7 @@ export interface AgentSessionSummary {
 }
 
 export type AgentTimelineEntry =
-    | { kind: 'user-message'; id: string; text: string; timestamp: number }
+    | { kind: 'user-message'; id: string; text: string; timestamp: number; checkpoint?: AgentMessageCheckpointLink }
     | { kind: 'system-notice'; id: string; text: string; timestamp: number }
     | { kind: 'workflow-context'; id: string; timestamp: number; action: 'set'; workflow: AgentWorkflowContext }
     | { kind: 'workflow-context'; id: string; timestamp: number; action: 'clear' }
@@ -157,15 +164,16 @@ export type AgentStreamEvent =
     | { type: 'text-delta'; delta: string }
     | { type: 'compaction'; summary: string; source: 'llm' | 'fallback'; messagesCompacted: number; preservedRecentMessages: number; estimatedTokens?: number; thresholdTokens?: number; fallbackReason?: string }
     | AgentContextUsageEvent
-    | { type: 'final'; sessionId: string; response: string; finalState: string }
+    | { type: 'final'; sessionId: string; response: string; finalState: string; runtimeFinalizing?: boolean }
     | { type: 'error'; error: string };
 
 type AgentContextUsageEvent = { type: 'context-usage'; promptTokens: number; completionTokens: number; contextWindowTokens: number; fillPercent: number; source: 'api' | 'estimated' };
 
 export type AgentWorkbenchMessage =
     | { type: 'agent.status'; status: 'idle' | 'running' | 'stopping'; detail?: string }
-    | { type: 'agent.state'; state: AgentWorkbenchState }
+    | { type: 'agent.state'; state: AgentWorkbenchState; stateSequence?: number }
     | { type: 'agent.streamEvent'; event: AgentStreamEvent }
+    | { type: 'agent.messageRewind'; prompt: string }
     | { type: 'agent.error'; message: string }
     | { type: 'agent.done' };
 
@@ -218,6 +226,7 @@ type SaveCheckpointOptions = {
     reason?: CheckpointReason;
     label?: string;
     summary?: string;
+    runtimeCheckpointId?: string;
     payloads?: Record<string, unknown>;
     payloadState?: unknown | null;
 };
@@ -499,7 +508,6 @@ class WorkbenchSessionService implements SessionServiceHandle {
                 thread_id: sessionId,
                 ...(checkpointId ? { checkpoint_id: checkpointId } : {}),
             },
-            version: 'v2',
         };
     }
 
@@ -525,7 +533,7 @@ class WorkbenchSessionService implements SessionServiceHandle {
             summary: options.summary,
             reason: options.reason,
             label: options.label,
-            runtimeCheckpointId,
+            runtimeCheckpointId: options.runtimeCheckpointId ?? runtimeCheckpointId,
             payloadState: options.payloadState ?? (options.payloads ? { payloads: options.payloads } : undefined),
         };
         fs.mkdirSync(this.sessionCheckpointDir(sessionId), { recursive: true });
@@ -762,16 +770,22 @@ class WorkbenchSessionService implements SessionServiceHandle {
 }
 
 export class AgentRuntimeController implements vscode.Disposable {
-    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer' } | undefined;
+    private activeRun: { abortController: AbortController; sessionId: string; abortReason?: 'stop' | 'steer'; visibleDone?: boolean; runStartedAt?: number; visibleFinalAt?: number } | undefined;
+    private readonly stoppedRuns = new WeakSet<AbortController>();
     private queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
     private cachedAgentHandle: { key: string; handle: any } | undefined;
     private sessionRuntimePromise: Promise<SessionRuntime> | undefined;
     private checkpointerPromise: Promise<RuntimeCheckpointer> | undefined;
+    private readonly workspaceSnapshots: WorkspaceSnapshotService;
 
     constructor(
         private readonly _context: vscode.ExtensionContext,
         private readonly outputChannel: vscode.OutputChannel,
-    ) {}
+    ) {
+        this.workspaceSnapshots = new WorkspaceSnapshotService(_context.globalStorageUri.fsPath, (message) => {
+            outputChannel.appendLine(message);
+        });
+    }
 
     async getWorkbenchState(input: Omit<AgentPromptInput, 'prompt'>): Promise<AgentWorkbenchState> {
         const scope = this.getSessionScope(input);
@@ -970,6 +984,46 @@ export class AgentRuntimeController implements vscode.Disposable {
         return this.getWorkbenchState({ ...input, sessionId });
     }
 
+    async rewindToUserMessage(sessionId: string, messageId: string, input: Omit<AgentPromptInput, 'prompt'>): Promise<{ state: AgentWorkbenchState; prompt: string }> {
+        if (this.activeRun) {
+            throw new Error(this.activeRun.sessionId === sessionId
+                ? 'An agent run is already active for this conversation.'
+                : 'An agent run is already active. Stop it before rewinding.');
+        }
+        const sessions = await this.getSessionRuntime();
+        const entries = this.readSessionEntries(sessions.service, sessionId);
+        const targetIndex = entries.findIndex((entry) => entry.kind === 'user-message' && entry.id === messageId);
+        const target = targetIndex >= 0 ? entries[targetIndex] : undefined;
+        if (!target || target.kind !== 'user-message') {
+            throw new Error('Cannot rewind: user message not found.');
+        }
+        const checkpointId = target.checkpoint?.workbenchCheckpointId;
+        if (!checkpointId) {
+            throw new Error('Cannot rewind: this message does not have a checkpoint.');
+        }
+
+        const result = await sessions.service.restoreCheckpoint(sessionId, checkpointId);
+        await this.workspaceSnapshots.restore(input.workspaceRoot, target.checkpoint?.workspaceSnapshotId);
+        const payloads = this.extractCheckpointPayloads(result);
+        const surface = payloads.surface;
+        if (this.isWorkbenchSurfacePayload(surface)) {
+            const title = surface.title.trim() || sessions.service.get(sessionId)?.title || this.getDefaultSessionTitle(input.workflowName);
+            sessions.service.touch(sessionId, { title });
+            sessions.service.setTitle(sessionId, title);
+            this.writeSessionEntries(sessions.service, sessionId, this.normalizeEntries(surface.displayThread));
+        } else {
+            this.writeSessionEntries(sessions.service, sessionId, entries.slice(0, targetIndex));
+        }
+        if (!result.langGraphRestored) {
+            await sessions.service.resetRuntimeThread(sessionId);
+        }
+
+        return {
+            state: await this.getWorkbenchState({ ...input, sessionId }),
+            prompt: target.text,
+        };
+    }
+
     async restoreCheckpoint(sessionId: string, checkpointId: string, input: Omit<AgentPromptInput, 'prompt'>): Promise<AgentWorkbenchState> {
         const sessions = await this.getSessionRuntime();
         const result = await sessions.service.restoreCheckpoint(sessionId, checkpointId);
@@ -1052,6 +1106,11 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     async sendPrompt(input: AgentPromptInput, postMessage: AgentWorkbenchPostMessage): Promise<AgentRunResult> {
         if (this.activeRun) {
+            if (this.activeRun.visibleDone) {
+                const waitMs = this.activeRun.visibleFinalAt ? Date.now() - this.activeRun.visibleFinalAt : undefined;
+                this.outputChannel.appendLine(`[n8n-agent-debug] prompt queued while DeepAgents finalizes sessionId=${this.activeRun.sessionId} waitAfterVisibleMs=${waitMs ?? 'unknown'} reason=pending`);
+                return this.queuePrompt(input, postMessage, 'pending');
+            }
             await postMessage({
                 type: 'agent.error',
                 message: 'An agent run is already in progress. Stop it before sending another prompt.',
@@ -1088,7 +1147,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         };
 
         const abortController = new AbortController();
-        this.activeRun = { abortController, sessionId: activeRecord.id };
+        this.activeRun = { abortController, sessionId: activeRecord.id, runStartedAt: Date.now() };
 
         const derivedTitle = activeRecord.title === 'New conversation'
             ? sessions.deriveSessionTitle(prompt, this.getDefaultSessionTitle(input.workflowName))
@@ -1097,30 +1156,56 @@ export class AgentRuntimeController implements vscode.Disposable {
         sessions.service.setTitle(activeRecord.id, derivedTitle);
 
         let entries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
-        entries = [...entries, { kind: 'user-message', id: randomUUID(), text: prompt, timestamp: Date.now() }];
+        const beforeMessageCheckpoint = await this.saveBeforeUserMessageCheckpoint(sessions.service, activeRecord.id, entries, prompt, input.workspaceRoot);
+        entries = [...entries, {
+            kind: 'user-message',
+            id: randomUUID(),
+            text: prompt,
+            timestamp: Date.now(),
+            checkpoint: {
+                workbenchCheckpointId: beforeMessageCheckpoint.checkpoint.id,
+                runtimeCheckpointId: beforeMessageCheckpoint.checkpoint.runtimeCheckpointId,
+                workspaceSnapshotId: beforeMessageCheckpoint.workspaceSnapshotId,
+            },
+        }];
         this.writeSessionEntries(sessions.service, activeRecord.id, entries);
 
+        await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
         await postMessage({ type: 'agent.status', status: 'running', detail: 'Preparing n8n agent runtime...' });
         await postMessage({ type: 'agent.streamEvent', event: { type: 'start', sessionId: activeRecord.id, message: prompt } });
 
         let result: AgentRunResult = { workflowChanged: false };
         let queuedPrompt: { input: AgentPromptInput; reason: 'pending' | 'steer' } | undefined;
+        let postedIdle = false;
         try {
             const runResult = await this.runInitialAgentTurn(promptInput, entries, postMessage, abortController.signal);
             entries = runResult.entries;
+            this.writeSessionEntries(sessions.service, activeRecord.id, entries);
+            if (!this.queuedPrompt && this.activeRun?.abortController === abortController) {
+                this.activeRun = undefined;
+                this.outputChannel.appendLine(`[n8n-agent-debug] agent host idle sessionId=${activeRecord.id}`);
+                await postMessage({ type: 'agent.status', status: 'idle' });
+                postedIdle = true;
+            }
             if (runResult.workflowChanged && !promptWorkflowContext) {
                 const inferredWorkflow = await this.inferWorkflowContextFromWorkspace(input.workspaceRoot);
                 if (inferredWorkflow) {
                     entries = this.withWorkflowContext(entries, inferredWorkflow);
+                    this.writeSessionEntries(sessions.service, activeRecord.id, entries);
                 }
             }
-            this.writeSessionEntries(sessions.service, activeRecord.id, entries);
             await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });
             await postMessage({ type: 'agent.done' });
+            this.outputChannel.appendLine(`[n8n-agent-debug] agent host done sessionId=${activeRecord.id} queuedPrompt=${String(Boolean(this.queuedPrompt))}`);
             result = { workflowChanged: runResult.workflowChanged };
         } catch (error: any) {
             const message = error?.message || String(error);
-            if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'steer') {
+            if (this.stoppedRuns.has(abortController)) {
+                this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime stopped sessionId=${activeRecord.id}`);
+                this.appendRunStoppedNotice(sessions.service, activeRecord.id);
+                this.queuedPrompt = undefined;
+                result = { workflowChanged: false };
+            } else if (this.activeRun?.abortController === abortController && this.activeRun.abortReason === 'steer') {
                 this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime steered sessionId=${activeRecord.id}`);
                 const latestEntries = this.withoutContextUsage(this.readSessionEntries(sessions.service, activeRecord.id));
                 this.writeSessionEntries(sessions.service, activeRecord.id, [
@@ -1149,7 +1234,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             queuedPrompt = this.queuedPrompt;
             if (queuedPrompt) {
                 this.queuedPrompt = undefined;
-            } else {
+            } else if (!postedIdle) {
                 await postMessage({ type: 'agent.status', status: 'idle' });
             }
         }
@@ -1169,6 +1254,8 @@ export class AgentRuntimeController implements vscode.Disposable {
             return this.sendPrompt(input, postMessage);
         }
         this.queuedPrompt = { input: { ...input, prompt }, reason };
+        const waitMs = this.activeRun.visibleFinalAt ? Date.now() - this.activeRun.visibleFinalAt : undefined;
+        this.outputChannel.appendLine(`[n8n-agent-debug] queuePrompt accepted sessionId=${this.activeRun.sessionId} reason=${reason} visibleDone=${String(Boolean(this.activeRun.visibleDone))} waitAfterVisibleMs=${waitMs ?? 'unknown'}`);
         if (reason === 'steer') {
             this.activeRun.abortReason = 'steer';
             await postMessage({ type: 'agent.status', status: 'stopping', detail: 'Steering current run...' });
@@ -1183,9 +1270,16 @@ export class AgentRuntimeController implements vscode.Disposable {
             await postMessage({ type: 'agent.status', status: 'idle' });
             return;
         }
-        await postMessage({ type: 'agent.status', status: 'stopping', detail: 'Stopping current run...' });
+        this.queuedPrompt = undefined;
         activeRun.abortReason = 'stop';
+        this.stoppedRuns.add(activeRun.abortController);
         activeRun.abortController.abort();
+        if (this.activeRun?.abortController === activeRun.abortController) {
+            this.activeRun = undefined;
+        }
+        const sessions = await this.getSessionRuntime();
+        this.appendRunStoppedNotice(sessions.service, activeRun.sessionId);
+        await postMessage({ type: 'agent.status', status: 'idle' });
     }
 
     dispose(): void {
@@ -1224,11 +1318,17 @@ export class AgentRuntimeController implements vscode.Disposable {
             };
         }
 
+        const setupStartedAt = Date.now();
         const handle = await this.getDeepAgentHandle(providerConfig, input);
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent handle ready sessionId=${input.sessionId || 'none'} provider=${providerConfig.provider} model=${providerConfig.model || 'default'} elapsedMs=${Date.now() - setupStartedAt}`);
         const sessions = await this.getSessionRuntime();
         sessions.service.setCheckpointer(handle.checkpointer);
         const agent = handle.agent;
-        const messages = [{ role: 'user', content: await this.buildInvocationPrompt(input) }];
+        const promptStartedAt = Date.now();
+        const invocationPrompt = await this.buildInvocationPrompt(input);
+        const nodeContextCount = this.normalizeNodeContexts(input.nodeContexts || input.nodeContext).length;
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent prompt built sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - promptStartedAt} promptChars=${invocationPrompt.length} nodeContexts=${nodeContextCount} workflowAttached=${String(Boolean(input.workflowId))}`);
+        const messages = [{ role: 'user', content: invocationPrompt }];
         const contextWindowTokens = await this.resolveContextWindow(providerConfig.provider, providerConfig.model, providerConfig.apiKey, providerConfig.baseUrl);
         const config = {
             ...sessions.service.buildSessionConfig(input.sessionId || ''),
@@ -1238,21 +1338,17 @@ export class AgentRuntimeController implements vscode.Disposable {
         let entries = [...initialEntries];
 
         if (typeof (agent as any).streamEvents === 'function') {
-            let v3Run: any;
-            try {
-                v3Run = await (agent as any).streamEvents({ messages }, { ...config, version: 'v3' });
-            } catch (error: any) {
-                this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 stream unavailable, falling back to v2: ${error?.message || String(error)}`);
+            const streamStartedAt = Date.now();
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.streamEvents start sessionId=${input.sessionId || 'none'} promptChars=${invocationPrompt.length}`);
+            const run = await this.raceAbort(Promise.resolve((agent as any).streamEvents({ messages }, { ...config, version: 'v3' })), signal);
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.streamEvents resolved sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - streamStartedAt}`);
+            if (!this.isDeepAgentV3Run(run)) {
+                throw new Error('DeepAgents v3 stream did not return a run stream.');
             }
-            if (this.isDeepAgentV3Run(v3Run)) {
-                return await this.consumeDeepAgentV3Run(v3Run, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
-            }
-
-            const stream = (agent as any).streamEvents({ messages }, { ...config, version: 'v2' });
-            return await this.consumeDeepAgentV2Stream(stream, input, entries, sessions.service, postMessage, signal, contextWindowTokens);
+            return await this.raceAbort(this.consumeDeepAgentV3Run(run, input, entries, sessions.service, postMessage, signal, contextWindowTokens), signal);
         }
 
-        const result = await (agent as any).invoke({ messages }, config);
+        const result = await this.raceAbort(Promise.resolve((agent as any).invoke({ messages }, config)), signal);
         const response = this.extractAgentText(result);
         const finalEvent: AgentStreamEvent = {
             type: 'final',
@@ -1265,17 +1361,20 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: false };
     }
 
-    private isDeepAgentV3Run(value: unknown): boolean {
+    private isDeepAgentV3Run(value: unknown): value is { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> } {
         return Boolean(value
             && typeof value === 'object'
-            && Symbol.asyncIterator in Object(value)
-            && 'messages' in Object(value)
-            && 'toolCalls' in Object(value)
             && 'output' in Object(value));
     }
 
+    private isAsyncIterable(value: unknown): value is AsyncIterable<any> {
+        return Boolean(value
+            && typeof value === 'object'
+            && Symbol.asyncIterator in Object(value));
+    }
+
     private async consumeDeepAgentV3Run(
-        run: any,
+        run: { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> },
         input: AgentPromptInput,
         initialEntries: AgentTimelineEntry[],
         service: SessionServiceHandle,
@@ -1283,12 +1382,14 @@ export class AgentRuntimeController implements vscode.Disposable {
         signal: AbortSignal,
         contextWindowTokens: number,
     ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean }> {
+        const runStartedAt = Date.now();
+        const accumulator = this.createStreamAccumulator();
         let entries = [...initialEntries];
         let fileModificationDetected = false;
-        const finalOutputPromise = Promise.resolve(run.output).catch((error: unknown) => {
-            this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 final output unavailable: ${error instanceof Error ? error.message : String(error)}`);
-            return undefined;
-        });
+        let visibleFinalEmitted = false;
+        let authoritativeFinalEmitted = false;
+        const loggedProjectionEvents = new Set<string>();
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run started sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'}`);
         const syncEntries = () => {
             if (!input.sessionId) return;
             this.writeSessionEntries(service, input.sessionId, entries);
@@ -1297,236 +1398,445 @@ export class AgentRuntimeController implements vscode.Disposable {
             entries = this.applyStreamEvent(entries, streamEvent);
             syncEntries();
             await postMessage({ type: 'agent.streamEvent', event: streamEvent });
+            if (streamEvent.type === 'operation' && streamEvent.status === 'done' && streamEvent.category === 'file-write') {
+                fileModificationDetected = true;
+            }
+        };
+        const emitFinalEvent = async (response: string, finalState: string, runtimeFinalizing: boolean) => {
+            if (runtimeFinalizing) {
+                if (visibleFinalEmitted) return;
+                visibleFinalEmitted = true;
+            } else {
+                if (authoritativeFinalEmitted) return;
+                authoritativeFinalEmitted = true;
+                visibleFinalEmitted = true;
+            }
+            const activeRun = this.activeRun;
+            if (activeRun && activeRun.sessionId === input.sessionId) {
+                activeRun.visibleDone = true;
+                if (runtimeFinalizing) {
+                    activeRun.visibleFinalAt = Date.now();
+                }
+            }
+            const elapsedMs = Date.now() - runStartedAt;
+            const waitAfterVisibleMs = !runtimeFinalizing && activeRun?.visibleFinalAt ? Date.now() - activeRun.visibleFinalAt : undefined;
+            const finalLogKind = runtimeFinalizing ? 'deepagents.v3.visible-final' : 'deepagents.v3.authoritative-final';
+            this.outputChannel.appendLine(`[n8n-agent-debug] ${finalLogKind} sessionId=${input.sessionId || 'none'} elapsedMs=${elapsedMs} waitAfterVisibleMs=${waitAfterVisibleMs ?? 'n/a'} responseChars=${response.length} finalState=${finalState}`);
+            const finalEvent: AgentStreamEvent = {
+                type: 'final',
+                sessionId: input.sessionId || '',
+                response,
+                finalState,
+                runtimeFinalizing,
+            };
+            entries = this.applyStreamEvent(entries, finalEvent);
+            syncEntries();
+            await postMessage({ type: 'agent.streamEvent', event: finalEvent });
         };
 
-        const [responseText, changed] = await Promise.all([
-            this.consumeDeepAgentV3MessagesProjection(run.messages, contextWindowTokens, emitStreamEvent, signal),
-            this.consumeDeepAgentV3ToolCallsProjection(run.toolCalls, emitStreamEvent, signal),
-            this.consumeDeepAgentV3ValuesProjection(run.values, emitStreamEvent, signal),
+        const projectionConsumers = Promise.allSettled([
+            this.consumeDeepAgentV3MessageProjection(run, accumulator, {
+                signal,
+                contextWindowTokens,
+                onStreamEvent: emitStreamEvent,
+                onFinalCandidate: async (response) => emitFinalEvent(response, 'done', true),
+                onProjectionEvent: (eventName, detail) => {
+                    if (loggedProjectionEvents.has(eventName)) return;
+                    loggedProjectionEvents.add(eventName);
+                    this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.message-event sessionId=${input.sessionId || 'none'} event=${eventName} elapsedMs=${Date.now() - runStartedAt}${detail ? ` ${detail}` : ''}`);
+                },
+            }),
+            this.consumeDeepAgentV3ToolCallProjection(run, {
+                signal,
+                onStreamEvent: emitStreamEvent,
+            }),
         ]);
-        fileModificationDetected = changed;
+        void projectionConsumers.then((results) => {
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.projections settled sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt}`);
+            for (const result of results) {
+                if (result.status === 'rejected' && !signal.aborted) {
+                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 projection consumer failed: ${result.reason?.message || String(result.reason)}`);
+                }
+            }
+        });
+
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run.output await-start sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt}`);
+        const finalOutput = await this.raceAbort(Promise.resolve(run.output), signal);
+        this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run.output resolved sessionId=${input.sessionId || 'none'} elapsedMs=${Date.now() - runStartedAt} output=${this.summarizeAgentOutput(finalOutput)}`);
 
         await this.throwIfAborted(signal);
-        const finalOutput = await finalOutputPromise;
-        const finalResponse = responseText
-            || this.extractAssistantTextFromAgentOutput(finalOutput)
-            || this.buildToolOnlyCompletionResponse(entries);
-        const finalEvent: AgentStreamEvent = {
-            type: 'final',
-            sessionId: input.sessionId || '',
-            response: finalResponse,
-            finalState: run.interrupted ? 'interrupted' : 'done',
-        };
-        await emitStreamEvent(finalEvent);
-        if (fileModificationDetected) {
-            await this.saveAutoCheckpointAfterFileModification(service, input, entries);
+        if (accumulator.thinkingText) {
+            await emitStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId || `thinking:${randomUUID()}`,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
         }
-        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)}`);
+        await emitFinalEvent(
+            this.extractAssistantTextFromAgentOutput(finalOutput) || accumulator.responseText || this.extractAgentText(finalOutput),
+            run.interrupted ? 'interrupted' : 'done',
+            false,
+        );
+        if (fileModificationDetected) {
+            this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
+        }
+        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v3 workflowChanged=${String(fileModificationDetected)} elapsedMs=${Date.now() - runStartedAt}`);
         return { entries, workflowChanged: fileModificationDetected };
     }
 
-    private buildToolOnlyCompletionResponse(entries: AgentTimelineEntry[]): string {
-        const latestOperation = [...entries].reverse().find((entry): entry is Extract<AgentTimelineEntry, { kind: 'operation' }> => entry.kind === 'operation' && entry.status === 'done');
-        if (!latestOperation) {
-            return 'The agent completed without producing a final message.';
+    private async consumeDeepAgentV3MessageProjection(
+        run: { messages?: AsyncIterable<any> },
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(run.messages)) return;
+        for await (const message of run.messages) {
+            await this.throwIfAborted(callbacks.signal);
+            await this.consumeDeepAgentV3Message(message, accumulator, callbacks);
         }
-        const url = this.extractJsonStringField(latestOperation.body, 'url');
-        const workflowName = this.extractJsonStringField(latestOperation.body, 'workflowName');
-        if (url && workflowName) {
-            return `Done. ${workflowName} is ready: ${url}`;
-        }
-        if (url) {
-            return `Done: ${url}`;
-        }
-        return 'Done.';
     }
 
-    private extractJsonStringField(value: unknown, field: string): string | undefined {
-        if (typeof value !== 'string' || !value.trim()) return undefined;
-        try {
-            const parsed = JSON.parse(value);
-            if (this.isRecord(parsed) && typeof parsed[field] === 'string') {
-                return parsed[field];
+    private async consumeDeepAgentV3Message(
+        message: { text?: AsyncIterable<string>; reasoning?: AsyncIterable<string>; usage?: AsyncIterable<any>; output?: PromiseLike<unknown> },
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
+        },
+    ): Promise<void> {
+        if (this.isAsyncIterable(message)) {
+            await this.consumeDeepAgentV3MessageEvents(message, accumulator, callbacks);
+            return;
+        }
+
+        const messageKey = `message:${randomUUID()}`;
+        const [, messageText, , output] = await Promise.all([
+            this.consumeDeepAgentV3MessageReasoning(message, messageKey, accumulator, callbacks),
+            this.consumeDeepAgentV3MessageText(message, messageKey, accumulator, callbacks),
+            this.consumeDeepAgentV3MessageUsage(message, callbacks),
+            Promise.resolve(message.output).catch(() => undefined),
+        ]);
+        if (accumulator.thinkingText && accumulator.thinkingOperationId === `thinking:${messageKey}`) {
+            await callbacks.onStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
+        }
+        const finalText = this.extractMessageTextFromOutput(output) || messageText;
+        if (finalText.trim() && !this.messageHasToolCalls(output)) {
+            await callbacks.onFinalCandidate(this.sanitizeAssistantText(finalText));
+        }
+    }
+
+    private async consumeDeepAgentV3MessageEvents(
+        message: AsyncIterable<any>,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onFinalCandidate: (response: string) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
+        },
+    ): Promise<void> {
+        // `message.text` resolves at message-finish; the UI needs the completed
+        // visible text block so the spinner is not tied to post-text finalization.
+        const messageKey = `message:${randomUUID()}`;
+        const blockText = new Map<number, string>();
+        let messageText = '';
+        let hasToolCall = false;
+        let visibleFinalEmitted = false;
+
+        const emitThinkingDone = async () => {
+            if (!accumulator.thinkingText) return;
+            await callbacks.onStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId || `thinking:${messageKey}`,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'done',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+                endedAt: Date.now(),
+            });
+            accumulator.thinkingText = '';
+            accumulator.thinkingOperationId = undefined;
+        };
+        const emitTextDelta = async (delta: string, blockIndex?: number) => {
+            if (!delta) return;
+            await emitThinkingDone();
+            accumulator.responseText += delta;
+            messageText += delta;
+            if (typeof blockIndex === 'number') {
+                blockText.set(blockIndex, `${blockText.get(blockIndex) || ''}${delta}`);
             }
-        } catch {
-            // Command output may append stderr after a JSON payload.
-        }
-        const pattern = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`);
-        return pattern.exec(value)?.[1];
-    }
+            callbacks.onProjectionEvent?.('text-delta', `chars=${delta.length} totalChars=${messageText.length}`);
+            await callbacks.onStreamEvent({ type: 'text-delta', delta });
+        };
+        const emitReasoningDelta = async (delta: string) => {
+            if (!delta) return;
+            accumulator.thinkingText += delta;
+            accumulator.thinkingOperationId ||= `thinking:${messageKey}`;
+            await callbacks.onStreamEvent({
+                type: 'operation',
+                operationId: accumulator.thinkingOperationId,
+                label: 'Thinking',
+                category: 'thinking',
+                status: 'running',
+                body: accumulator.thinkingText,
+                startedAt: Date.now(),
+            });
+        };
+        const emitVisibleFinal = async () => {
+            const finalText = this.sanitizeAssistantText(messageText);
+            if (visibleFinalEmitted || hasToolCall || !finalText) return;
+            visibleFinalEmitted = true;
+            await emitThinkingDone();
+            await callbacks.onFinalCandidate(finalText);
+        };
 
-    private async consumeDeepAgentV3MessagesProjection(
-        messages: AsyncIterable<any>,
-        contextWindowTokens: number,
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
-    ): Promise<string> {
-        let responseText = '';
-        for await (const message of messages) {
-            await this.throwIfAborted(signal);
-            if (message?.node === 'tools') {
+        for await (const event of message) {
+            await this.throwIfAborted(callbacks.signal);
+            if (!this.isRecord(event)) continue;
+            const eventName = String(event.event || '');
+            callbacks.onProjectionEvent?.(eventName);
+            if (eventName === 'message-start') {
+                const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
+                if (usageEvent) await callbacks.onStreamEvent(usageEvent);
                 continue;
             }
-            responseText += await this.consumeDeepAgentV3MessageHandle(message, contextWindowTokens, emitStreamEvent, signal);
+            if (eventName === 'usage') {
+                const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
+                if (usageEvent) await callbacks.onStreamEvent(usageEvent);
+                continue;
+            }
+            if (eventName === 'content-block-start') {
+                const content = event.content;
+                if (this.isToolContentBlock(content)) {
+                    hasToolCall = true;
+                }
+                await emitTextDelta(this.extractContentBlockText(content), this.readMessageEventIndex(event));
+                await emitReasoningDelta(this.extractContentBlockReasoning(content));
+                continue;
+            }
+            if (eventName === 'content-block-delta') {
+                const delta = event.delta || event.content;
+                if (this.isToolContentBlock(delta) || this.isToolContentBlock(this.isRecord(delta) ? delta.fields : undefined)) {
+                    hasToolCall = true;
+                }
+                await emitTextDelta(this.extractContentBlockText(delta), this.readMessageEventIndex(event));
+                await emitReasoningDelta(this.extractContentBlockReasoning(delta));
+                continue;
+            }
+            if (eventName === 'content-block-finish') {
+                const content = event.content;
+                if (this.isToolContentBlock(content)) {
+                    hasToolCall = true;
+                }
+                const index = this.readMessageEventIndex(event);
+                const finalBlockText = this.extractContentBlockText(content);
+                if (finalBlockText) {
+                    const currentBlockText = typeof index === 'number' ? blockText.get(index) || '' : '';
+                    const missingText = currentBlockText && finalBlockText.startsWith(currentBlockText)
+                        ? finalBlockText.slice(currentBlockText.length)
+                        : currentBlockText ? '' : finalBlockText;
+                    await emitTextDelta(missingText, index);
+                    await emitVisibleFinal();
+                }
+                if (this.extractContentBlockReasoning(content)) {
+                    await emitThinkingDone();
+                }
+                continue;
+            }
+            if (eventName === 'message-finish') {
+                const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
+                if (usageEvent) await callbacks.onStreamEvent(usageEvent);
+                await emitVisibleFinal();
+                await emitThinkingDone();
+                continue;
+            }
+            if (eventName === 'error') {
+                throw new Error(String(event.message || 'DeepAgents message stream failed'));
+            }
         }
-        return responseText;
+
+        await emitVisibleFinal();
+        await emitThinkingDone();
     }
 
-    private async consumeDeepAgentV3MessageHandle(
-        message: any,
-        contextWindowTokens: number,
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
-    ): Promise<string> {
-        const accumulator = this.createStreamAccumulator();
-        const key = String(message?.id || message?.runId || message?.node || randomUUID());
-        let pendingText = '';
-        let isInternalRecoveryMessage = false;
-        let textVisibilityResolved = false;
-        const emitVisibleTextDelta = async (delta: string) => {
-            if (accumulator.thinkingText) {
-                await this.finishThinkingOperation(accumulator, emitStreamEvent);
+    private async consumeDeepAgentV3MessageReasoning(
+        message: { reasoning?: AsyncIterable<string> },
+        messageKey: string,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(message.reasoning)) return;
+        for await (const delta of message.reasoning) {
+            await this.throwIfAborted(callbacks.signal);
+            if (typeof delta === 'string' && delta) {
+                callbacks.onProjectionEvent?.('message.reasoning-delta', `chars=${delta.length}`);
+                accumulator.thinkingText += delta;
+                accumulator.thinkingOperationId ||= `thinking:${messageKey}`;
+                await callbacks.onStreamEvent({
+                    type: 'operation',
+                    operationId: accumulator.thinkingOperationId,
+                    label: 'Thinking',
+                    category: 'thinking',
+                    status: 'running',
+                    body: accumulator.thinkingText,
+                    startedAt: Date.now(),
+                });
             }
-            accumulator.responseText += delta;
-            await emitStreamEvent({ type: 'text-delta', delta });
-        };
-        await Promise.all([
-            (async () => {
-                for await (const delta of message.text || []) {
-                    await this.throwIfAborted(signal);
-                    if (typeof delta !== 'string' || !delta) continue;
-                    if (isInternalRecoveryMessage) continue;
-                    if (!textVisibilityResolved) {
-                        pendingText += delta;
-                        if (INVALID_TOOL_CALL_RECOVERY_MARKER.startsWith(pendingText) && pendingText.length < INVALID_TOOL_CALL_RECOVERY_MARKER.length) {
-                            continue;
-                        }
-                        textVisibilityResolved = true;
-                        if (pendingText.startsWith(INVALID_TOOL_CALL_RECOVERY_MARKER)) {
-                            isInternalRecoveryMessage = true;
-                            pendingText = '';
-                            continue;
-                        }
-                        await emitVisibleTextDelta(pendingText);
-                        pendingText = '';
-                        continue;
-                    }
-                    await emitVisibleTextDelta(delta);
-                }
-            })(),
-            (async () => {
-                for await (const delta of message.reasoning || []) {
-                    await this.throwIfAborted(signal);
-                    if (typeof delta !== 'string' || !delta) continue;
-                    accumulator.thinkingText += delta;
-                    accumulator.thinkingOperationId ||= `thinking:${key}`;
-                    await emitStreamEvent({
+        }
+    }
+
+    private async consumeDeepAgentV3MessageText(
+        message: { text?: AsyncIterable<string> },
+        messageKey: string,
+        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+            onProjectionEvent?: (eventName: string, detail?: string) => void;
+        },
+    ): Promise<string> {
+        if (!this.isAsyncIterable(message.text)) return '';
+        let text = '';
+        for await (const delta of message.text) {
+            await this.throwIfAborted(callbacks.signal);
+            if (typeof delta === 'string' && delta) {
+                callbacks.onProjectionEvent?.('message.text-delta', `chars=${delta.length}`);
+                if (accumulator.thinkingText) {
+                    await callbacks.onStreamEvent({
                         type: 'operation',
-                        operationId: accumulator.thinkingOperationId,
+                        operationId: accumulator.thinkingOperationId || `thinking:${messageKey}`,
                         label: 'Thinking',
                         category: 'thinking',
-                        status: 'running',
+                        status: 'done',
                         body: accumulator.thinkingText,
                         startedAt: Date.now(),
+                        endedAt: Date.now(),
                     });
+                    accumulator.thinkingText = '';
+                    accumulator.thinkingOperationId = undefined;
                 }
-            })(),
-            (async () => {
-                for await (const usage of message.usage || []) {
-                    await this.throwIfAborted(signal);
-                    const usageEvent = this.contextUsageEventFromUsage(usage, contextWindowTokens);
-                    if (usageEvent) await emitStreamEvent(usageEvent);
-                }
-            })(),
-        ]);
-        if (accumulator.thinkingText) {
-            await this.finishThinkingOperation(accumulator, emitStreamEvent);
+                accumulator.responseText += delta;
+                text += delta;
+                await callbacks.onStreamEvent({ type: 'text-delta', delta });
+            }
         }
-        return accumulator.responseText;
+        return text;
     }
 
-    private async consumeDeepAgentV3ToolCallsProjection(
-        toolCalls: AsyncIterable<any>,
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
-    ): Promise<boolean> {
-        let fileModificationDetected = false;
-        for await (const call of toolCalls) {
-            await this.throwIfAborted(signal);
-            const changed = await this.consumeDeepAgentV3ToolCall(call, emitStreamEvent, signal);
-            fileModificationDetected = fileModificationDetected || changed;
-        }
-        return fileModificationDetected;
-    }
-
-    private async consumeDeepAgentV3ValuesProjection(
-        values: AsyncIterable<any>,
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
+    private async consumeDeepAgentV3MessageUsage(
+        message: { usage?: AsyncIterable<any> },
+        callbacks: {
+            signal: AbortSignal;
+            contextWindowTokens: number;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
     ): Promise<void> {
-        let previousTodosKey = '';
-        for await (const value of values) {
-            await this.throwIfAborted(signal);
-            const todos = this.extractTodosFromPayload(value);
-            if (!todos.length) continue;
-            const todosKey = JSON.stringify(todos);
-            if (todosKey === previousTodosKey) continue;
-            previousTodosKey = todosKey;
-            const hasActiveTodo = todos.some((todo) => todo.status === 'in_progress' || todo.status === 'pending');
-            const body = JSON.stringify({ todos });
-            await emitStreamEvent({
-                type: 'operation',
-                operationId: 'write_todos:state',
-                label: 'Write Todos',
-                category: 'todo',
-                status: hasActiveTodo ? 'running' : 'done',
-                body,
-                summary: this.extractTodoSummary({ todos }),
-                startedAt: Date.now(),
-                endedAt: hasActiveTodo ? undefined : Date.now(),
-            });
+        if (!this.isAsyncIterable(message.usage)) return;
+        for await (const usage of message.usage) {
+            await this.throwIfAborted(callbacks.signal);
+            const usageEvent = this.contextUsageEventFromUsage(usage, callbacks.contextWindowTokens);
+            if (usageEvent) await callbacks.onStreamEvent(usageEvent);
         }
+    }
+
+    private async consumeDeepAgentV3ToolCallProjection(
+        run: { toolCalls?: AsyncIterable<any> },
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        if (!this.isAsyncIterable(run.toolCalls)) return;
+        const completions: Promise<void>[] = [];
+        for await (const toolCall of run.toolCalls) {
+            await this.throwIfAborted(callbacks.signal);
+            const completion = this.consumeDeepAgentV3ToolCall(toolCall, callbacks).catch((error: any) => {
+                if (!callbacks.signal.aborted) {
+                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 tool-call projection failed: ${error?.message || String(error)}`);
+                }
+            });
+            completions.push(completion);
+        }
+        await Promise.allSettled(completions);
     }
 
     private async consumeDeepAgentV3ToolCall(
-        call: any,
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-        signal: AbortSignal,
-    ): Promise<boolean> {
-        const toolName = String(call?.name || 'tool');
-        if (!this.shouldShowToolOperation(toolName)) {
-            await Promise.allSettled([call?.status, call?.output, call?.error]);
-            return false;
-        }
-        const toolCallId = String(call?.callId || randomUUID());
+        toolCall: any,
+        callbacks: {
+            signal: AbortSignal;
+            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
+        },
+    ): Promise<void> {
+        const toolName = String(toolCall?.name || 'tool');
+        if (!this.shouldShowToolOperation(toolName)) return;
+        const toolCallId = String(toolCall?.callId || randomUUID());
+        const operationId = `${toolName}:${toolCallId}`;
+        const startedAt = Date.now();
         const category = this.categorizeTool(toolName);
-        const operationId = this.getV3ToolOperationId(toolName, toolCallId);
-        const command = category === 'shell' ? this.extractCommandFromToolPayload(call?.input) : undefined;
-        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(call?.input) : undefined;
-        const todoSummary = category === 'todo' ? this.extractTodoSummary(call?.input) : undefined;
-        await emitStreamEvent({
+        const command = category === 'shell' ? this.extractCommandFromToolPayload(toolCall?.input) : undefined;
+        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(toolCall?.input) : undefined;
+        const todoSummary = category === 'todo' ? this.extractTodoSummary(toolCall?.input) : undefined;
+        await callbacks.onStreamEvent({
             type: 'operation',
             operationId,
             label: this.formatToolLabel(toolName),
             category,
             status: 'running',
-            body: category === 'todo' ? this.stringifyToolPayload(call?.input) : command ? `$ ${command}` : this.stringifyToolPayload(call?.input),
+            body: category === 'todo' ? this.stringifyToolPayload(toolCall?.input) : command ? `$ ${command}` : this.stringifyToolPayload(toolCall?.input),
             summary: command ? `$ ${command}` : filePath || todoSummary,
-            startedAt: Date.now(),
+            startedAt,
         });
 
-        const status = await Promise.resolve(call?.status).catch(() => 'error');
-        await this.throwIfAborted(signal);
+        let status = await Promise.resolve(toolCall?.status).catch(() => 'error');
         let output: unknown;
-        let errorText: string | undefined;
-        try {
-            output = await Promise.resolve(call?.output);
-        } catch (error: unknown) {
-            errorText = error instanceof Error ? error.message : String(error);
+        let errorMessage: string | undefined;
+        if (status === 'error') {
+            errorMessage = await Promise.resolve(toolCall?.error).catch((error: any) => error?.message || String(error));
+            output = errorMessage || 'Tool failed';
+        } else {
+            output = await Promise.resolve(toolCall?.output).catch((error: any) => {
+                status = 'error';
+                errorMessage = error?.message || String(error);
+                return errorMessage;
+            });
         }
-        errorText ||= await Promise.resolve(call?.error).catch(() => undefined);
-        const outputText = this.stringifyToolOutput(output) || errorText;
-        const streamEvent: AgentStreamEvent = {
+
+        await this.throwIfAborted(callbacks.signal);
+        const outputText = status === 'error' ? String(errorMessage || output || 'Tool failed') : this.stringifyToolOutput(output);
+        await callbacks.onStreamEvent({
             type: 'operation',
             operationId,
             label: this.formatToolLabel(toolName),
@@ -1534,13 +1844,12 @@ export class AgentRuntimeController implements vscode.Disposable {
             status: status === 'error' ? 'error' : 'done',
             summary: this.truncateOperationDetail(outputText),
             body: outputText,
-            startedAt: Date.now(),
+            startedAt,
             endedAt: Date.now(),
-        };
-        await emitStreamEvent(streamEvent);
+        });
         const compaction = this.extractCompactionSummary(output);
         if (compaction) {
-            await emitStreamEvent({
+            await callbacks.onStreamEvent({
                 type: 'compaction',
                 summary: compaction.summary,
                 source: compaction.source,
@@ -1551,125 +1860,31 @@ export class AgentRuntimeController implements vscode.Disposable {
                 fallbackReason: compaction.fallbackReason,
             });
         }
-        return streamEvent.status === 'done' && streamEvent.category === 'file-write';
     }
 
-    private getV3ToolOperationId(toolName: string, toolCallId: string): string {
-        return `${toolName}:${toolCallId || 'unknown'}`;
+    private contextUsageEventFromUsage(usage: any, contextWindowTokens: number): AgentContextUsageEvent | undefined {
+        const promptTokens = Number(usage?.input_tokens ?? usage?.promptTokens ?? usage?.prompt_tokens ?? 0);
+        const completionTokens = Number(usage?.output_tokens ?? usage?.completionTokens ?? usage?.completion_tokens ?? 0);
+        if (!promptTokens && !completionTokens) return undefined;
+        const fillPercent = contextWindowTokens > 0 ? Math.min(100, Math.round((promptTokens / contextWindowTokens) * 100)) : 0;
+        return {
+            type: 'context-usage',
+            promptTokens,
+            completionTokens,
+            contextWindowTokens,
+            fillPercent,
+            source: 'api',
+        };
     }
 
-    private async finishThinkingOperation(
-        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
-        emitStreamEvent: (event: AgentStreamEvent) => Promise<void>,
-    ): Promise<void> {
-        if (!accumulator.thinkingText) return;
-        await emitStreamEvent({
-            type: 'operation',
-            operationId: accumulator.thinkingOperationId || `thinking:${randomUUID()}`,
-            label: 'Thinking',
-            category: 'thinking',
-            status: 'done',
-            body: accumulator.thinkingText,
-            startedAt: Date.now(),
-            endedAt: Date.now(),
-        });
-        accumulator.thinkingText = '';
-        accumulator.thinkingOperationId = undefined;
-    }
-
-    private async consumeDeepAgentV2Stream(
-        stream: AsyncIterable<any>,
-        input: AgentPromptInput,
-        initialEntries: AgentTimelineEntry[],
+    private saveAutoCheckpointAfterFileModificationInBackground(
         service: SessionServiceHandle,
-        postMessage: AgentWorkbenchPostMessage,
-        signal: AbortSignal,
-        contextWindowTokens: number,
-    ): Promise<{ entries: AgentTimelineEntry[]; workflowChanged: boolean }> {
-        const accumulator = this.createStreamAccumulator();
-        let entries = [...initialEntries];
-        let fileModificationDetected = false;
-        const syncEntries = () => {
-            if (!input.sessionId) return;
-            this.writeSessionEntries(service, input.sessionId, entries);
-        };
-
-        for await (const event of stream) {
-            await this.throwIfAborted(signal);
-            await this.processDeepAgentStreamEvent(event, accumulator, {
-                contextWindowTokens,
-                onTextDelta: async (delta: string) => {
-                    entries = this.applyStreamEvent(entries, { type: 'text-delta', delta });
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: { type: 'text-delta', delta } });
-                },
-                onOperation: async (operation: any) => {
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'operation',
-                        operationId: String(operation.operationId || randomUUID()),
-                        label: String(operation.label || 'Operation'),
-                        category: String(operation.category || 'tool'),
-                        status: operation.status === 'error' ? 'error' : operation.status === 'done' ? 'done' : 'running',
-                        body: typeof operation.body === 'string' ? operation.body : undefined,
-                        summary: typeof operation.summary === 'string' ? operation.summary : undefined,
-                        startedAt: Number(operation.startedAt || Date.now()),
-                        endedAt: typeof operation.endedAt === 'number' ? operation.endedAt : undefined,
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                    if (streamEvent.status === 'done' && streamEvent.category === 'file-write') {
-                        fileModificationDetected = true;
-                    }
-                },
-                onCompaction: async (compaction: any) => {
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'compaction',
-                        summary: String(compaction.summary || 'Context compacted'),
-                        source: compaction.source === 'fallback' ? 'fallback' : 'llm',
-                        messagesCompacted: Number(compaction.messagesCompacted || 0),
-                        preservedRecentMessages: Number(compaction.preservedRecentMessages || 0),
-                        estimatedTokens: typeof compaction.estimatedTokens === 'number' ? compaction.estimatedTokens : undefined,
-                        thresholdTokens: typeof compaction.thresholdTokens === 'number' ? compaction.thresholdTokens : undefined,
-                        fallbackReason: typeof compaction.fallbackReason === 'string' ? compaction.fallbackReason : undefined,
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                },
-                onContextUsage: async (usage: any) => {
-                    if (usage?.source !== 'api') {
-                        return;
-                    }
-                    const streamEvent: AgentStreamEvent = {
-                        type: 'context-usage',
-                        promptTokens: Number(usage.promptTokens || 0),
-                        completionTokens: Number(usage.completionTokens || 0),
-                        contextWindowTokens: Number(usage.contextWindowTokens || contextWindowTokens),
-                        fillPercent: Number(usage.fillPercent || 0),
-                        source: 'api',
-                    };
-                    entries = this.applyStreamEvent(entries, streamEvent);
-                    syncEntries();
-                    await postMessage({ type: 'agent.streamEvent', event: streamEvent });
-                },
-            });
-        }
-
-        const finalEvent: AgentStreamEvent = {
-            type: 'final',
-            sessionId: input.sessionId || '',
-            response: accumulator.responseText,
-            finalState: 'done',
-        };
-        entries = this.applyStreamEvent(entries, finalEvent);
-        syncEntries();
-        await postMessage({ type: 'agent.streamEvent', event: finalEvent });
-        if (fileModificationDetected) {
-            await this.saveAutoCheckpointAfterFileModification(service, input, entries);
-        }
-        this.outputChannel.appendLine(`[n8n-agent-debug] agent runtime completed sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'} stream=v2 workflowChanged=${String(fileModificationDetected)}`);
-        return { entries, workflowChanged: fileModificationDetected };
+        input: AgentPromptInput,
+        entries: AgentTimelineEntry[],
+    ): void {
+        void this.saveAutoCheckpointAfterFileModification(service, input, entries).catch((error: any) => {
+            this.outputChannel.appendLine(`[n8n-agent] Auto-checkpoint background task failed: ${error?.message || String(error)}`);
+        });
     }
 
     private async saveAutoCheckpointAfterFileModification(
@@ -1689,21 +1904,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         } catch (error: any) {
             this.outputChannel.appendLine(`[n8n-agent] Auto-checkpoint failed: ${error?.message || String(error)}`);
         }
-    }
-
-    private contextUsageEventFromUsage(usage: any, contextWindowTokens: number): AgentContextUsageEvent | undefined {
-        const promptTokens = Number(usage?.input_tokens ?? usage?.promptTokens ?? usage?.prompt_tokens ?? 0);
-        const completionTokens = Number(usage?.output_tokens ?? usage?.completionTokens ?? usage?.completion_tokens ?? 0);
-        if (!promptTokens && !completionTokens) return undefined;
-        const fillPercent = contextWindowTokens > 0 ? Math.min(100, Math.round((promptTokens / contextWindowTokens) * 100)) : 0;
-        return {
-            type: 'context-usage',
-            promptTokens,
-            completionTokens,
-            contextWindowTokens,
-            fillPercent,
-            source: 'api',
-        };
     }
 
     private truncateOperationDetail(value: unknown): string | undefined {
@@ -2123,6 +2323,86 @@ export class AgentRuntimeController implements vscode.Disposable {
         return 'The agent completed without producing text.';
     }
 
+    private extractMessageTextFromOutput(output: unknown): string {
+        if (!this.isRecord(output)) return '';
+        return this.sanitizeAssistantText(this.extractMessageTextContent(output.content));
+    }
+
+    private summarizeAgentOutput(output: unknown): string {
+        if (!this.isRecord(output)) return typeof output;
+        const keys = Object.keys(output).slice(0, 8).join(',');
+        const messages = Array.isArray(output.messages) ? output.messages : [];
+        const last = messages[messages.length - 1];
+        const lastRole = this.isRecord(last) ? String(last.role || last._getType || last.type || last.name || 'unknown') : 'none';
+        const lastTextChars = this.isRecord(last) ? this.extractMessageTextContent(last.content).length : 0;
+        return `keys=${keys || 'none'} messages=${messages.length} lastRole=${lastRole} lastTextChars=${lastTextChars}`;
+    }
+
+    private readMessageEventIndex(event: Record<string, unknown>): number | undefined {
+        const index = Number(event.index);
+        return Number.isFinite(index) ? index : undefined;
+    }
+
+    private extractContentBlockText(value: unknown): string {
+        if (!this.isRecord(value)) return '';
+        const type = String(value.type || '').toLowerCase();
+        if ((type === 'text' || type === 'text-delta') && typeof value.text === 'string') {
+            return value.text;
+        }
+        if (this.isRecord(value.fields)) {
+            return this.extractContentBlockText(value.fields);
+        }
+        if (this.isRecord(value.content)) {
+            return this.extractContentBlockText(value.content);
+        }
+        return '';
+    }
+
+    private extractContentBlockReasoning(value: unknown): string {
+        if (!this.isRecord(value)) return '';
+        const type = String(value.type || '').toLowerCase();
+        if ((type === 'reasoning' || type === 'reasoning-delta') && typeof value.reasoning === 'string') {
+            return value.reasoning;
+        }
+        if (type === 'thinking' && typeof value.thinking === 'string') {
+            return value.thinking;
+        }
+        if (this.isRecord(value.fields)) {
+            return this.extractContentBlockReasoning(value.fields);
+        }
+        if (this.isRecord(value.content)) {
+            return this.extractContentBlockReasoning(value.content);
+        }
+        return '';
+    }
+
+    private isToolContentBlock(value: unknown): boolean {
+        if (!this.isRecord(value)) return false;
+        const type = String(value.type || '').toLowerCase();
+        if (type.includes('tool') || type === 'input_json_delta') return true;
+        for (const key of ['tool_calls', 'toolCalls', 'invalid_tool_calls', 'invalidToolCalls']) {
+            if (Array.isArray(value[key]) && (value[key] as unknown[]).length > 0) return true;
+        }
+        return this.isToolContentBlock(value.fields) || this.isToolContentBlock(value.content);
+    }
+
+    private messageHasToolCalls(message: unknown): boolean {
+        const visit = (value: unknown): boolean => {
+            if (!this.isRecord(value)) return false;
+            for (const key of ['tool_calls', 'toolCalls', 'invalid_tool_calls', 'invalidToolCalls']) {
+                if (Array.isArray(value[key]) && (value[key] as unknown[]).length > 0) return true;
+            }
+            for (const key of ['content', 'content_blocks']) {
+                const blocks = value[key];
+                if (Array.isArray(blocks) && blocks.some((block) => this.isRecord(block) && String(block.type || '').includes('tool'))) {
+                    return true;
+                }
+            }
+            return visit(value.kwargs) || visit(value.lc_kwargs);
+        };
+        return visit(message);
+    }
+
     private extractAssistantTextFromAgentOutput(result: unknown): string {
         if (!this.isRecord(result)) return '';
         const messages = Array.isArray(result.messages) ? result.messages : [];
@@ -2303,6 +2583,30 @@ export class AgentRuntimeController implements vscode.Disposable {
             error.name = 'AbortError';
             throw error;
         }
+    }
+
+    private async raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+        if (signal.aborted) {
+            await this.throwIfAborted(signal);
+        }
+        return new Promise<T>((resolve, reject) => {
+            const onAbort = () => {
+                const error = new Error('Agent run cancelled.');
+                error.name = 'AbortError';
+                reject(error);
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            promise.then(
+                (value) => {
+                    signal.removeEventListener('abort', onAbort);
+                    resolve(value);
+                },
+                (error) => {
+                    signal.removeEventListener('abort', onAbort);
+                    reject(error);
+                },
+            );
+        });
     }
 
     private async getSessionRuntime(): Promise<SessionRuntime> {
@@ -2831,6 +3135,18 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { kind: 'system-notice', id: randomUUID(), text, timestamp: Date.now() };
     }
 
+    private appendRunStoppedNotice(service: SessionServiceHandle, sessionId: string): void {
+        const entries = this.withoutContextUsage(this.readSessionEntries(service, sessionId));
+        const last = entries[entries.length - 1];
+        if (last?.kind === 'system-notice' && last.text === 'Run stopped.') {
+            return;
+        }
+        this.writeSessionEntries(service, sessionId, [
+            ...this.finalizePendingOperations(entries, 'done'),
+            this.createSystemNotice('Run stopped.'),
+        ]);
+    }
+
     private withoutContextUsage(entries: AgentTimelineEntry[]): AgentTimelineEntry[] {
         return entries.filter((entry) => entry.kind !== 'context-usage');
     }
@@ -2872,6 +3188,28 @@ export class AgentRuntimeController implements vscode.Disposable {
         options: SaveCheckpointOptions,
     ): Promise<SessionCheckpointMetadata> {
         return service.saveCheckpoint(sessionId, this.withLegacyCheckpointPayload(options));
+    }
+
+    private async saveBeforeUserMessageCheckpoint(
+        service: SessionServiceHandle,
+        sessionId: string,
+        entries: AgentTimelineEntry[],
+        prompt: string,
+        workspaceRoot: string | undefined,
+    ): Promise<{ checkpoint: SessionCheckpointMetadata; workspaceSnapshotId?: string }> {
+        service.setCheckpointer(await this.createPersistentCheckpointer());
+        const workspaceSnapshotId = await this.workspaceSnapshots.capture(workspaceRoot, 'Before user message');
+        const surface = this.buildCheckpointSurfacePayload(service, sessionId, entries);
+        const promptPreview = prompt.length > 80 ? `${prompt.slice(0, 77)}...` : prompt;
+        const checkpoint = await this.saveWorkbenchCheckpoint(service, sessionId, {
+            reason: 'manual',
+            label: 'Before user message',
+            summary: promptPreview ? `Before "${promptPreview}"` : 'Before user message',
+            payloads: {
+                surface,
+            },
+        });
+        return { checkpoint, workspaceSnapshotId };
     }
 
     private async maybeSaveWorkbenchCheckpoint(
@@ -3023,7 +3361,9 @@ export class AgentRuntimeController implements vscode.Disposable {
             this.checkpointerPromise = (async () => {
                 const checkpointsDir = path.join(this._context.globalStorageUri.fsPath, 'agent-sessions');
                 await fs.promises.mkdir(checkpointsDir, { recursive: true });
-                const checkpointPath = path.join(checkpointsDir, 'langgraph-checkpoints.json');
+                const legacyCheckpointPath = path.join(checkpointsDir, 'langgraph-checkpoints.json');
+                const checkpointRoot = path.join(checkpointsDir, 'langgraph-checkpoints-sharded');
+                await fs.promises.mkdir(checkpointRoot, { recursive: true });
                 const checkpointModule = await importRuntimeModule('@langchain/langgraph-checkpoint');
                 const BaseCheckpointSaver = checkpointModule.BaseCheckpointSaver as new () => any;
                 const copyCheckpoint = checkpointModule.copyCheckpoint as (checkpoint: Record<string, unknown>) => Record<string, unknown>;
@@ -3045,26 +3385,102 @@ export class AgentRuntimeController implements vscode.Disposable {
                     return { threadId, checkpointNamespace, checkpointId };
                 };
 
-                class FileCheckpointSaver extends BaseCheckpointSaver {
-                    private storage: CheckpointStorage = {};
-                    private writes: CheckpointWrites = {};
-                    private flushQueue: Promise<void> = Promise.resolve();
-                    private flushCounter = 0;
+                type ThreadCheckpointData = {
+                    storage: CheckpointStorage;
+                    writes: CheckpointWrites;
+                    flushQueue: Promise<void>;
+                    flushCounter: number;
+                };
 
-                    constructor(private readonly filePath: string) {
+                class FileCheckpointSaver extends BaseCheckpointSaver {
+                    private readonly threads = new Map<string, ThreadCheckpointData>();
+
+                    constructor(
+                        private readonly rootDir: string,
+                        private readonly legacyFilePath: string,
+                        private readonly log: (message: string) => void,
+                    ) {
                         super();
-                        this.load();
                     }
 
-                    private load(): void {
+                    private threadFilePath(threadId: string): string {
+                        return path.join(this.rootDir, encodeURIComponent(threadId), 'state.json');
+                    }
+
+                    private createEmptyThreadData(): ThreadCheckpointData {
+                        return {
+                            storage: {},
+                            writes: {},
+                            flushQueue: Promise.resolve(),
+                            flushCounter: 0,
+                        };
+                    }
+
+                    private loadThread(threadId: string, options: { allowLegacy?: boolean } = {}): ThreadCheckpointData {
+                        const cached = this.threads.get(threadId);
+                        if (cached) return cached;
+
+                        const filePath = this.threadFilePath(threadId);
+                        let data = this.loadShardedThread(filePath);
+                        if (!data && options.allowLegacy) {
+                            data = this.loadLegacyThread(threadId);
+                            if (data) {
+                                const checkpointCount = Object.values(data.storage[threadId] ?? {})
+                                    .reduce((count, checkpoints) => count + Object.keys(checkpoints).length, 0);
+                                this.log(`[n8n-agent-debug] migrated legacy langgraph checkpoints threadId=${threadId} checkpoints=${checkpointCount} writes=${Object.keys(data.writes).length}`);
+                                void this.flushThread(threadId, data).catch((error: any) => {
+                                    this.log(`[n8n-agent] Failed to persist migrated langgraph checkpoints threadId=${threadId}: ${error?.message || String(error)}`);
+                                });
+                            }
+                        }
+                        data ??= this.createEmptyThreadData();
+                        this.threads.set(threadId, data);
+                        return data;
+                    }
+
+                    private loadShardedThread(filePath: string): ThreadCheckpointData | undefined {
                         try {
-                            const raw = fs.readFileSync(this.filePath, 'utf8');
+                            const raw = fs.readFileSync(filePath, 'utf8');
                             const data = JSON.parse(raw);
-                            this.storage = data.storage && typeof data.storage === 'object' ? data.storage : {};
-                            this.writes = data.writes && typeof data.writes === 'object' ? data.writes : {};
+                            return {
+                                storage: data.storage && typeof data.storage === 'object' ? data.storage : {},
+                                writes: data.writes && typeof data.writes === 'object' ? data.writes : {},
+                                flushQueue: Promise.resolve(),
+                                flushCounter: 0,
+                            };
                         } catch {
-                            this.storage = {};
-                            this.writes = {};
+                            return undefined;
+                        }
+                    }
+
+                    private loadLegacyThread(threadId: string): ThreadCheckpointData | undefined {
+                        if (!fs.existsSync(this.legacyFilePath)) return undefined;
+                        const startedAt = Date.now();
+                        try {
+                            const raw = fs.readFileSync(this.legacyFilePath, 'utf8');
+                            const legacy = JSON.parse(raw);
+                            const storageForThread = legacy.storage?.[threadId];
+                            const writesForThread: CheckpointWrites = {};
+                            for (const [key, value] of Object.entries((legacy.writes || {}) as CheckpointWrites)) {
+                                try {
+                                    if (parseKey(key).threadId === threadId) {
+                                        writesForThread[key] = value;
+                                    }
+                                } catch {
+                                    // Ignore malformed legacy write keys.
+                                }
+                            }
+                            this.log(`[n8n-agent-debug] loaded legacy langgraph checkpoint file threadId=${threadId} elapsedMs=${Date.now() - startedAt} sizeBytes=${raw.length}`);
+                            if (!storageForThread && !Object.keys(writesForThread).length) return undefined;
+                            return {
+                                storage: storageForThread ? { [threadId]: storageForThread } : {},
+                                writes: writesForThread,
+                                flushQueue: Promise.resolve(),
+                                flushCounter: 0,
+                            };
+                        } catch (error: any) {
+                            this.log(`[n8n-agent] Failed to load legacy langgraph checkpoints threadId=${threadId}: ${error?.message || String(error)}`);
+                            return undefined;
                         }
                     }
 
@@ -3095,19 +3511,25 @@ export class AgentRuntimeController implements vscode.Disposable {
                         return new TextDecoder().decode(Uint8Array.from(bytes));
                     }
 
-                    private async flush(): Promise<void> {
-                        const flushTask = this.flushQueue.then(async () => {
-                            await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true });
-                            const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.${this.flushCounter++}.tmp`;
+                    private async flushThread(threadId: string, threadData: ThreadCheckpointData): Promise<void> {
+                        const filePath = this.threadFilePath(threadId);
+                        const flushStartedAt = Date.now();
+                        const flushTask = threadData.flushQueue.then(async () => {
+                            await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+                            const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${threadData.flushCounter++}.tmp`;
                             const payload = JSON.stringify({
-                                version: 1,
-                                storage: this.storage,
-                                writes: this.writes,
+                                version: 2,
+                                storage: threadData.storage,
+                                writes: threadData.writes,
                             });
                             await fs.promises.writeFile(tmpPath, payload, 'utf8');
-                            await fs.promises.rename(tmpPath, this.filePath);
+                            await fs.promises.rename(tmpPath, filePath);
+                            const elapsedMs = Date.now() - flushStartedAt;
+                            if (elapsedMs > 500) {
+                                this.log(`[n8n-agent-debug] langgraph checkpoint shard flush slow threadId=${threadId} elapsedMs=${elapsedMs} sizeBytes=${payload.length}`);
+                            }
                         });
-                        this.flushQueue = flushTask.catch(() => undefined);
+                        threadData.flushQueue = flushTask.catch(() => undefined);
                         await flushTask;
                     }
 
@@ -3117,18 +3539,19 @@ export class AgentRuntimeController implements vscode.Disposable {
                         if (!threadId) return undefined;
 
                         let checkpointId = getCheckpointId(config);
+                        const threadData = this.loadThread(threadId, { allowLegacy: Boolean(checkpointId) });
                         if (!checkpointId) {
-                            const checkpoints = this.storage[threadId]?.[checkpointNamespace];
+                            const checkpoints = threadData.storage[threadId]?.[checkpointNamespace];
                             if (!checkpoints) return undefined;
                             checkpointId = Object.keys(checkpoints).sort((a, b) => b.localeCompare(a))[0];
                         }
 
-                        const saved = this.storage[threadId]?.[checkpointNamespace]?.[checkpointId];
+                        const saved = threadData.storage[threadId]?.[checkpointNamespace]?.[checkpointId];
                         if (!saved) return undefined;
 
                         const [checkpoint, metadata, parentCheckpointId] = saved;
                         const key = generateKey(threadId, checkpointNamespace, checkpointId);
-                        const pendingWrites = await Promise.all(Object.values(this.writes[key] || {}).map(async ([taskId, channel, value]) => [
+                        const pendingWrites = await Promise.all(Object.values(threadData.writes[key] || {}).map(async ([taskId, channel, value]) => [
                             taskId,
                             channel,
                             await this.serde.loadsTyped('json', this.decodeLegacySerializedValue(value)),
@@ -3147,14 +3570,19 @@ export class AgentRuntimeController implements vscode.Disposable {
 
                     async *list(config: Record<string, any>, options?: { before?: Record<string, any>; limit?: number; filter?: Record<string, unknown> }): AsyncIterable<any> {
                         let { before, limit, filter } = options ?? {};
-                        const threadIds = config.configurable?.thread_id ? [config.configurable.thread_id] : Object.keys(this.storage);
+                        const threadIds = config.configurable?.thread_id
+                            ? [config.configurable.thread_id]
+                            : fs.existsSync(this.rootDir)
+                                ? fs.readdirSync(this.rootDir).map((entry) => decodeURIComponent(entry))
+                                : [];
                         const configCheckpointNamespace = config.configurable?.checkpoint_ns;
                         const configCheckpointId = config.configurable?.checkpoint_id;
 
                         for (const threadId of threadIds) {
-                            for (const checkpointNamespace of Object.keys(this.storage[threadId] ?? {})) {
+                            const threadData = this.loadThread(threadId, { allowLegacy: Boolean(configCheckpointId) });
+                            for (const checkpointNamespace of Object.keys(threadData.storage[threadId] ?? {})) {
                                 if (configCheckpointNamespace !== undefined && checkpointNamespace !== configCheckpointNamespace) continue;
-                                const checkpoints = this.storage[threadId]?.[checkpointNamespace] ?? {};
+                                const checkpoints = threadData.storage[threadId]?.[checkpointNamespace] ?? {};
                                 const sortedCheckpoints = Object.entries(checkpoints).sort((a, b) => b[0].localeCompare(a[0]));
                                 for (const [checkpointId, [checkpoint, metadataStr, parentCheckpointId]] of sortedCheckpoints) {
                                     if (configCheckpointId && checkpointId !== configCheckpointId) continue;
@@ -3166,7 +3594,7 @@ export class AgentRuntimeController implements vscode.Disposable {
                                         limit -= 1;
                                     }
                                     const key = generateKey(threadId, checkpointNamespace, checkpointId);
-                                    const pendingWrites = await Promise.all(Object.values(this.writes[key] || {}).map(async ([taskId, channel, value]) => [
+                                    const pendingWrites = await Promise.all(Object.values(threadData.writes[key] || {}).map(async ([taskId, channel, value]) => [
                                         taskId,
                                         channel,
                                         await this.serde.loadsTyped('json', this.decodeLegacySerializedValue(value)),
@@ -3193,18 +3621,19 @@ export class AgentRuntimeController implements vscode.Disposable {
                         if (!threadId) {
                             throw new Error('Failed to put checkpoint. The passed RunnableConfig is missing configurable.thread_id.');
                         }
-                        this.storage[threadId] ??= {};
-                        this.storage[threadId][checkpointNamespace] ??= {};
+                        const threadData = this.loadThread(threadId);
+                        threadData.storage[threadId] ??= {};
+                        threadData.storage[threadId][checkpointNamespace] ??= {};
                         const [[, serializedCheckpoint], [, serializedMetadata]] = await Promise.all([
                             this.serde.dumpsTyped(preparedCheckpoint),
                             this.serde.dumpsTyped(metadata),
                         ]);
-                        this.storage[threadId][checkpointNamespace][checkpoint.id] = [
+                        threadData.storage[threadId][checkpointNamespace][checkpoint.id] = [
                             this.encodeSerializedValue(serializedCheckpoint),
                             this.encodeSerializedValue(serializedMetadata),
                             config.configurable?.checkpoint_id,
                         ];
-                        await this.flush();
+                        await this.flushThread(threadId, threadData);
                         return { configurable: { thread_id: threadId, checkpoint_ns: checkpointNamespace, checkpoint_id: checkpoint.id } };
                     }
 
@@ -3219,30 +3648,27 @@ export class AgentRuntimeController implements vscode.Disposable {
                             throw new Error('Failed to put writes. The passed RunnableConfig is missing configurable.checkpoint_id.');
                         }
                         const outerKey = generateKey(threadId, checkpointNamespace, checkpointId);
-                        const existingWrites = this.writes[outerKey];
-                        this.writes[outerKey] ??= {};
+                        const threadData = this.loadThread(threadId);
+                        const existingWrites = threadData.writes[outerKey];
+                        threadData.writes[outerKey] ??= {};
                         await Promise.all(writes.map(async ([channel, value], idx) => {
                             const [, serializedValue] = await this.serde.dumpsTyped(value);
                             const writeIndex = writesIndexMap[channel] ?? idx;
                             const innerKey = `${taskId},${writeIndex}`;
                             if (writeIndex >= 0 && existingWrites && innerKey in existingWrites) return;
-                            this.writes[outerKey][innerKey] = [taskId, channel, this.encodeSerializedValue(serializedValue)];
+                            threadData.writes[outerKey][innerKey] = [taskId, channel, this.encodeSerializedValue(serializedValue)];
                         }));
-                        await this.flush();
+                        await this.flushThread(threadId, threadData);
                     }
 
                     async deleteThread(threadId: string): Promise<void> {
-                        delete this.storage[threadId];
-                        for (const key of Object.keys(this.writes)) {
-                            if (parseKey(key).threadId === threadId) {
-                                delete this.writes[key];
-                            }
-                        }
-                        await this.flush();
+                        const threadData = this.createEmptyThreadData();
+                        this.threads.set(threadId, threadData);
+                        await this.flushThread(threadId, threadData);
                     }
                 }
 
-                return new FileCheckpointSaver(checkpointPath) as RuntimeCheckpointer;
+                return new FileCheckpointSaver(checkpointRoot, legacyCheckpointPath, (message) => this.outputChannel.appendLine(message)) as RuntimeCheckpointer;
             })();
         }
         return this.checkpointerPromise;
@@ -3256,140 +3682,6 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     private createStreamAccumulator(): { responseText: string; thinkingText: string; thinkingOperationId?: string } {
         return { responseText: '', thinkingText: '' };
-    }
-
-    private async processDeepAgentStreamEvent(
-        event: any,
-        accumulator: { responseText: string; thinkingText: string; thinkingOperationId?: string },
-        callbacks: {
-            contextWindowTokens: number;
-            onTextDelta: (delta: string) => Promise<void>;
-            onOperation: (operation: any) => Promise<void>;
-            onCompaction: (compaction: any) => Promise<void>;
-            onContextUsage: (usage: any) => Promise<void>;
-        },
-    ): Promise<void> {
-        const eventName = String(event?.event || '');
-        if (eventName === 'on_chat_model_stream') {
-            const chunk = event?.data?.chunk;
-            const { textDelta, thinkingDelta } = this.extractStreamDeltas(chunk);
-            await this.emitContextUsageFromChunk(event, chunk, callbacks.contextWindowTokens, callbacks.onContextUsage);
-            if (thinkingDelta) {
-                accumulator.thinkingText += thinkingDelta;
-                accumulator.thinkingOperationId ||= this.getStreamOperationId(event, 'thinking');
-                await callbacks.onOperation({
-                    operationId: accumulator.thinkingOperationId,
-                    label: 'Thinking',
-                    category: 'thinking',
-                    status: 'running',
-                    body: accumulator.thinkingText,
-                    startedAt: Date.now(),
-                });
-            }
-            if (textDelta) {
-                if (accumulator.thinkingText) {
-                    await callbacks.onOperation({
-                        operationId: accumulator.thinkingOperationId || this.getStreamOperationId(event, 'thinking'),
-                        label: 'Thinking',
-                        category: 'thinking',
-                        status: 'done',
-                        body: accumulator.thinkingText,
-                        startedAt: Date.now(),
-                        endedAt: Date.now(),
-                    });
-                    accumulator.thinkingText = '';
-                    accumulator.thinkingOperationId = undefined;
-                }
-                accumulator.responseText += textDelta;
-                await callbacks.onTextDelta(textDelta);
-            }
-            return;
-        }
-        if (eventName === 'on_chat_model_end') {
-            await this.emitContextUsageFromChunk(event, event?.data?.output || event?.data, callbacks.contextWindowTokens, callbacks.onContextUsage);
-            return;
-        }
-        if (eventName === 'on_tool_start') {
-            const toolName = String(event?.name || 'tool');
-            if (this.shouldShowToolOperation(toolName)) {
-                const category = this.categorizeTool(toolName);
-                const command = category === 'shell' ? this.extractCommandFromToolPayload(event?.data?.input) : undefined;
-                const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(event?.data?.input) : undefined;
-                const todoSummary = category === 'todo' ? this.extractTodoSummary(event?.data?.input) : undefined;
-                await callbacks.onOperation({
-                    operationId: this.getStreamOperationId(event, toolName),
-                    label: this.formatToolLabel(toolName),
-                    category,
-                    status: 'running',
-                    body: category === 'todo' ? this.stringifyToolPayload(event?.data?.input) : command ? `$ ${command}` : this.stringifyToolPayload(event?.data?.input),
-                    summary: command ? `$ ${command}` : filePath || todoSummary,
-                    startedAt: Date.now(),
-                });
-            }
-            return;
-        }
-        if (eventName === 'on_tool_end') {
-            const toolName = String(event?.name || 'tool');
-            if (this.shouldShowToolOperation(toolName)) {
-                const output = this.stringifyToolOutput(event?.data?.output);
-                await callbacks.onOperation({
-                    operationId: this.getStreamOperationId(event, toolName),
-                    label: this.formatToolLabel(toolName),
-                    category: this.categorizeTool(toolName),
-                    status: event?.data?.output?.error ? 'error' : 'done',
-                    summary: this.truncateOperationDetail(output),
-                    body: output,
-                    startedAt: Date.now(),
-                    endedAt: Date.now(),
-                });
-            }
-            const compaction = this.extractCompactionSummary(event?.data?.output || event?.data?.chunk);
-            if (compaction) await callbacks.onCompaction(compaction);
-        }
-    }
-
-    private extractStreamDeltas(chunk: any): { textDelta?: string; thinkingDelta?: string } {
-        const content = chunk?.content;
-        let textDelta = typeof content === 'string' ? content : undefined;
-        if (!textDelta && Array.isArray(content)) {
-            textDelta = content.map((part) => {
-                if (typeof part === 'string') return part;
-                if (typeof part?.text === 'string') return part.text;
-                if (typeof part?.textDelta === 'string') return part.textDelta;
-                return '';
-            }).join('');
-        }
-        const thinkingDelta = typeof chunk?.additional_kwargs?.reasoning_content === 'string'
-            ? chunk.additional_kwargs.reasoning_content
-            : typeof chunk?.additional_kwargs?.reasoning === 'string'
-                ? chunk.additional_kwargs.reasoning
-                : undefined;
-        return { textDelta: textDelta || undefined, thinkingDelta };
-    }
-
-    private async emitContextUsageFromChunk(
-        event: any,
-        payload: any,
-        contextWindowTokens: number,
-        onContextUsage: (usage: any) => Promise<void>,
-    ): Promise<void> {
-        const usage = payload?.usage_metadata || payload?.usage || payload?.response_metadata?.tokenUsage;
-        const promptTokens = Number(usage?.input_tokens ?? usage?.promptTokens ?? usage?.prompt_tokens ?? 0);
-        const completionTokens = Number(usage?.output_tokens ?? usage?.completionTokens ?? usage?.completion_tokens ?? 0);
-        if (!promptTokens && !completionTokens) return;
-        const fillPercent = contextWindowTokens > 0 ? Math.min(100, Math.round((promptTokens / contextWindowTokens) * 100)) : 0;
-        await onContextUsage({
-            promptTokens,
-            completionTokens,
-            contextWindowTokens,
-            fillPercent,
-            source: 'api',
-            runId: event?.run_id,
-        });
-    }
-
-    private getStreamOperationId(event: any, toolName: string): string {
-        return `${toolName}:${String(event?.run_id || event?.id || 'unknown')}`;
     }
 
     private shouldShowToolOperation(toolName: string): boolean {

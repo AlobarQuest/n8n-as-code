@@ -7,6 +7,8 @@ export interface AgentWorkbenchHtmlInput {
     providerModelLabel: string;
 }
 
+export const AGENT_WORKBENCH_BUILD = 'awb-2026.05.20.5-latency-probe';
+
 function escapeHtml(value: string): string {
     return value
         .replace(/&/g, '&amp;')
@@ -33,6 +35,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const initialWorkflowLabel = hasWorkflow ? safeWorkflowName : 'No workflow context';
     const safeWorkflowUrl = escapeHtml(input.workflowUrl || '');
     const safeProviderModelLabel = escapeHtml(input.providerModelLabel);
+    const safeWorkbenchBuild = escapeHtml(AGENT_WORKBENCH_BUILD);
     const workflowIdJs = JSON.stringify(input.workflowId);
     const workflowUrlJs = JSON.stringify(input.workflowUrl || '');
     const workflowReloadUrlJs = JSON.stringify(input.workflowReloadUrl || input.workflowUrl || '');
@@ -50,6 +53,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const trashIcon = lucideIcon('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>');
     const compactIcon = lucideIcon('<path d="M6 12h12"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/>');
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
+    const rewindIcon = lucideIcon('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>');
+    const copyIcon = lucideIcon('<rect width="12" height="12" x="8" y="8" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>');
+    const stopIcon = lucideIcon('<rect width="10" height="10" x="7" y="7" rx="1.5"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
     const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
     const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
@@ -392,6 +398,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .workbench-build {
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1;
+            opacity: .72;
+            flex: 0 0 auto;
+            user-select: text;
+        }
         .context-actions {
             display: flex;
             gap: 8px;
@@ -508,10 +522,54 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 13px;
             overflow-wrap: anywhere;
         }
-        .entry.user { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+        .entry.user {
+            border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+        }
         .entry.system { color: var(--muted); }
         .entry.assistant.streaming { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
         .entry.operation, .entry.compaction, .entry.context { background: color-mix(in srgb, var(--elevated) 90%, transparent); }
+        .entry-body {
+            white-space: pre-wrap;
+        }
+        .message-group {
+            display: grid;
+            gap: 6px;
+        }
+        .message-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 14px;
+            padding-right: 1px;
+        }
+        .message-action {
+            display: inline-grid;
+            place-items: center;
+            width: 18px;
+            height: 18px;
+            border: 0;
+            border-radius: 4px;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 0;
+        }
+        .message-action:hover:not(:disabled) {
+            color: var(--text);
+            background: color-mix(in srgb, var(--elevated) 70%, transparent);
+        }
+        .message-action:disabled {
+            opacity: 0.55;
+            cursor: default;
+        }
+        .message-action svg {
+            width: 14px;
+            height: 14px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 1.7;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
         .entry-head {
             display: flex;
             justify-content: space-between;
@@ -712,6 +770,16 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 12px;
         }
         .pending-prompt.open { display: grid; }
+        .runtime-finalizing {
+            display: none;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.25;
+            padding: 0 2px;
+        }
+        .runtime-finalizing.open {
+            display: block;
+        }
         .pending-prompt-main {
             display: flex;
             gap: 7px;
@@ -1013,7 +1081,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             padding: 4px 8px;
             border-radius: 6px;
         }
-        .send-button {
+        .send-button,
+        .stop-button.active {
             display: inline-grid;
             place-items: center;
             width: 32px;
@@ -1024,7 +1093,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             line-height: 1;
             box-shadow: 0 1px 0 color-mix(in srgb, white 18%, transparent) inset;
         }
-        .send-button svg {
+        .send-button svg,
+        .stop-button svg {
             width: 15px;
             height: 15px;
             stroke: currentColor;
@@ -1037,7 +1107,10 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             display: none;
         }
         .stop-button.active {
-            display: inline-block;
+            color: var(--error);
+            background: transparent;
+            border: 1px solid color-mix(in srgb, var(--error) 55%, var(--border));
+            box-shadow: none;
         }
         button:disabled {
             cursor: not-allowed;
@@ -1119,6 +1192,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                         <div class="chat-title-row">
                             <div class="chat-title">Workflow Architect</div>
                             <div id="conversation-title" class="conversation-title"></div>
+                            <div class="workbench-build" title="Agent Workbench build">${safeWorkbenchBuild}</div>
                         </div>
                         <div class="context-actions">
                             <div id="context-pill" class="context-pill" title="Context usage">
@@ -1144,6 +1218,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 <div class="composer-input">
                     <div id="context-badges" class="context-badges"></div>
                     <div id="pending-prompt" class="pending-prompt" aria-live="polite"></div>
+                    <div id="runtime-finalizing" class="runtime-finalizing" aria-live="polite">Finalizing context before the next run...</div>
                     <div id="mention-menu" class="mention-menu"></div>
                     <textarea id="prompt" placeholder="Ask the n8n agent what to do with this workflow..." rows="2"></textarea>
                     <div class="composer-toolbar">
@@ -1154,7 +1229,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                             <div id="reasoning-menu" class="inline-popover reasoning" role="menu"></div>
                         </div>
                         <div class="composer-actions">
-                            <button id="stop" class="ghost stop-button" type="button" disabled>Stop</button>
+                            <button id="stop" class="ghost stop-button" type="button" title="Stop" aria-label="Stop" disabled>${stopIcon}</button>
                             <button id="send" class="send-button" type="submit" title="Send" aria-label="Send">${sendIcon}</button>
                         </div>
                     </div>
@@ -1231,6 +1306,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         let newSessionMenuOpen = false;
         let autoScrollFeed = true;
         let pendingPrompt = null;
+        let runtimeFinalizing = false;
+        let lastStateSequence = 0;
+        const rewoundMessageIds = new Set();
         const expandedDetailKeys = new Set();
 
         const OP_ICONS = {
@@ -1255,6 +1333,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         const form = document.getElementById('composer');
         const promptInput = document.getElementById('prompt');
         const pendingPromptEl = document.getElementById('pending-prompt');
+        const runtimeFinalizingEl = document.getElementById('runtime-finalizing');
         const sendButton = document.getElementById('send');
         const stopButton = document.getElementById('stop');
         const selectModelButton = document.getElementById('select-model');
@@ -1305,7 +1384,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             checkpointSaveButton.disabled = running;
             compactContextButton.disabled = running;
             if (runIndicator) runIndicator.classList.toggle('active', running);
+            renderRuntimeFinalizing();
             renderCheckpoints();
+            renderFeed();
         }
 
         function renderPendingPrompt() {
@@ -1329,6 +1410,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 renderPendingPrompt();
                 vscode.postMessage({ type: 'agent.steer', text: pendingPrompt.text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
             });
+        }
+
+        function renderRuntimeFinalizing() {
+            if (!runtimeFinalizingEl) return;
+            runtimeFinalizingEl.classList.toggle('open', Boolean(runtimeFinalizing));
         }
 
         function escapeText(value) {
@@ -1934,13 +2020,13 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
         function renderEntry(entry, index) {
             if (entry.kind === 'user-message') {
-                return textEntry('user', entry.text);
+                return userMessageEntry(entry);
             }
             if (entry.kind === 'system-notice') {
                 return textEntry('system', entry.text);
             }
             if (entry.kind === 'assistant-body') {
-                return textEntry('assistant' + (entry.streaming ? ' streaming' : ''), entry.text || '');
+                return assistantMessageEntry(entry);
             }
             if (entry.kind === 'context-usage') return document.createComment('context usage');
             if (entry.kind === 'workflow-context' || entry.kind === 'node-context') return document.createComment('context marker');
@@ -2228,6 +2314,91 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             return el;
         }
 
+        function userMessageEntry(entry) {
+            const wrap = document.createElement('div');
+            wrap.className = 'message-group user-message';
+            const el = document.createElement('div');
+            el.className = 'entry user';
+            const body = document.createElement('div');
+            body.className = 'entry-body';
+            body.textContent = entry.text || '';
+            el.appendChild(body);
+            wrap.appendChild(el);
+
+            const checkpointId = entry.checkpoint && entry.checkpoint.workbenchCheckpointId;
+            if (checkpointId) {
+                const actions = document.createElement('div');
+                actions.className = 'message-actions';
+                const rewind = document.createElement('button');
+                rewind.type = 'button';
+                rewind.className = 'message-action message-rewind';
+                rewind.title = 'Rewind to before this message';
+                rewind.setAttribute('aria-label', 'Rewind to before this message');
+                rewind.disabled = isRunning;
+                rewind.innerHTML = '${rewindIcon}';
+                rewind.addEventListener('click', () => {
+                    if (!state || !state.activeSessionId || isRunning) return;
+                    rewindMessageOptimistically(entry);
+                    vscode.postMessage({
+                        type: 'agent.message.rewind',
+                        sessionId: state.activeSessionId,
+                        messageId: entry.id,
+                    });
+                });
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'message-action';
+                copy.title = 'Copy message';
+                copy.setAttribute('aria-label', 'Copy message');
+                copy.innerHTML = '${copyIcon}';
+                copy.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'clipboard-write', text: entry.text || '' });
+                });
+                actions.append(rewind, copy);
+                wrap.appendChild(actions);
+            }
+            return wrap;
+        }
+
+        function assistantMessageEntry(entry) {
+            const wrap = document.createElement('div');
+            wrap.className = 'message-group assistant-message';
+            const el = textEntry('assistant' + (entry.streaming ? ' streaming' : ''), entry.text || '');
+            wrap.appendChild(el);
+            if (!entry.streaming && entry.text) {
+                const actions = document.createElement('div');
+                actions.className = 'message-actions';
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'message-action';
+                copy.title = 'Copy response';
+                copy.setAttribute('aria-label', 'Copy response');
+                copy.innerHTML = '${copyIcon}';
+                copy.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'clipboard-write', text: entry.text || '' });
+                });
+                actions.append(copy);
+                wrap.appendChild(actions);
+            }
+            return wrap;
+        }
+
+        function rewindMessageOptimistically(entry) {
+            if (!state || !state.session || !Array.isArray(state.session.entries)) return;
+            const entries = state.session.entries;
+            const idx = entries.findIndex((candidate) => candidate && candidate.kind === 'user-message' && candidate.id === entry.id);
+            if (idx < 0) return;
+            rewoundMessageIds.add(entry.id);
+            state.session.entries = entries.slice(0, idx);
+            state.session.contextUsage = undefined;
+            pendingPrompt = null;
+            renderPendingPrompt();
+            promptInput.value = entry.text || '';
+            renderAll();
+            promptInput.focus();
+            promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+        }
+
         function renderAll() {
             currentWorkflowContext = state && state.session ? state.session.workflowContext || null : null;
             setNodeContexts(state && state.session ? state.session.nodeContexts || [] : [], false);
@@ -2236,6 +2407,32 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             renderFeed();
             renderMentionMenu();
             if (checkpointOverlay && checkpointOverlay.classList.contains('open')) renderCheckpoints();
+        }
+
+        function incomingStateContainsRewoundMessage(nextState) {
+            if (!nextState || !nextState.session || !Array.isArray(nextState.session.entries) || !rewoundMessageIds.size) return false;
+            return nextState.session.entries.some((entry) => entry && entry.kind === 'user-message' && rewoundMessageIds.has(entry.id));
+        }
+
+        function incomingStateDropsLiveEntries(nextState) {
+            if (!state || !state.session || !nextState || !nextState.session) return false;
+            if (state.activeSessionId !== nextState.activeSessionId) return false;
+            const currentEntries = Array.isArray(state.session.entries) ? state.session.entries : [];
+            const nextEntries = Array.isArray(nextState.session.entries) ? nextState.session.entries : [];
+            if (nextEntries.length >= currentEntries.length) return false;
+            const hasLiveEntry = currentEntries.some((entry) =>
+                entry && ((entry.kind === 'assistant-body' && entry.streaming) || (entry.kind === 'operation' && entry.status === 'running'))
+            );
+            return isRunning || runtimeFinalizing || hasLiveEntry;
+        }
+
+        function acceptIncomingStateMessage(message) {
+            const sequence = Number(message.stateSequence || 0);
+            if (sequence && sequence < lastStateSequence) return false;
+            if (incomingStateContainsRewoundMessage(message.state)) return false;
+            if (incomingStateDropsLiveEntries(message.state)) return false;
+            if (sequence) lastStateSequence = sequence;
+            return true;
         }
 
         function getMentionQuery() {
@@ -2357,6 +2554,20 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             });
         }
 
+        function stopRunOptimistically() {
+            if (!state || !state.session || !Array.isArray(state.session.entries)) return;
+            let entries = finalizePendingOperations([...state.session.entries], 'done');
+            const last = entries[entries.length - 1];
+            if (!last || last.kind !== 'system-notice' || last.text !== 'Run stopped.') {
+                entries.push({ kind: 'system-notice', id: crypto.randomUUID(), text: 'Run stopped.', timestamp: Date.now() });
+            }
+            state.session.entries = entries;
+            pendingPrompt = null;
+            renderPendingPrompt();
+            setRunning(false);
+            renderAll();
+        }
+
         function stripEnvironmentDetails(text) {
             let value = String(text || '');
             const openTag = '<environment_details>';
@@ -2449,6 +2660,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             } else if (event.type === 'final') {
                 entries = finalizePendingOperations(entries, 'done');
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
+                runtimeFinalizing = Boolean(event.runtimeFinalizing);
+                setRunning(false);
+                renderRuntimeFinalizing();
             } else if (event.type === 'operation') {
                 const idx = findMatchingPendingOperationIndex(entries, event.operationId, event.label, event.category);
                 const existing = idx >= 0 && entries[idx] && entries[idx].kind === 'operation' ? entries[idx] : null;
@@ -2511,7 +2725,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const text = promptInput.value.trim();
             if (!text || !state) return;
             promptInput.value = '';
-            if (isRunning) {
+            if (isRunning || runtimeFinalizing) {
                 pendingPrompt = { text, mode: 'pending' };
                 renderPendingPrompt();
                 vscode.postMessage({ type: 'agent.queue', text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
@@ -2554,7 +2768,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             autoScrollFeed = isFeedNearBottom();
         });
 
-        on(stopButton, 'click', () => vscode.postMessage({ type: 'agent.stop' }));
+        on(stopButton, 'click', () => {
+            stopButton.disabled = true;
+            stopRunOptimistically();
+            vscode.postMessage({ type: 'agent.stop' });
+        });
         on(historyOpenButton, 'click', openHistory);
         on(historyCloseButton, 'click', closeHistory);
         on(historyOverlay, 'click', (event) => {
@@ -2666,7 +2884,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'agent.status') {
-                setRunning(message.status === 'running' || message.status === 'stopping');
+                if (message.status === 'idle') runtimeFinalizing = false;
+                setRunning(message.status === 'running');
+                renderRuntimeFinalizing();
                 return;
             }
 
@@ -2676,7 +2896,17 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 return;
             }
 
+            if (message.type === 'agent.messageRewind') {
+                pendingPrompt = null;
+                renderPendingPrompt();
+                promptInput.value = typeof message.prompt === 'string' ? message.prompt : '';
+                promptInput.focus();
+                promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+                return;
+            }
+
             if (message.type === 'agent.state') {
+                if (!acceptIncomingStateMessage(message)) return;
                 state = message.state || null;
                 renderAll();
                 return;

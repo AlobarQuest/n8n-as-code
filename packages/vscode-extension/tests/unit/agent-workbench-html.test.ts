@@ -35,7 +35,7 @@ test('Agent Workbench HTML: forwards node detail context to the agent', () => {
 });
 
 test('Agent Workbench HTML: renders provider/session controls', () => {
-    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const { AGENT_WORKBENCH_BUILD, buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({
         workflowId: 'wf-1',
         workflowName: 'Workflow 1',
@@ -61,6 +61,7 @@ test('Agent Workbench HTML: renders provider/session controls', () => {
     assert.ok(html.includes('history-overlay'), 'Must render conversation history as a modal overlay');
     assert.ok(html.includes("type: 'agent.ready'"), 'Must request initial state from the extension host');
     assert.ok(html.includes('openai / gpt-5.4'), 'Must render selected provider/model label');
+    assert.ok(html.includes(AGENT_WORKBENCH_BUILD), 'Must render a visible Workbench build stamp');
     assert.ok(!html.includes('Agent workbench is ready. Ask for a workflow inspection'), 'Must remove initial system message');
 });
 
@@ -76,6 +77,198 @@ test('Agent Workbench HTML: Enter submits and Shift+Enter keeps multiline input'
     assert.ok(html.includes("event.key === 'Enter' && !event.shiftKey"), 'Must submit on Enter unless Shift is held');
     assert.ok(html.includes('event.preventDefault()'), 'Must prevent textarea newline insertion on submit');
     assert.ok(html.includes('sendPrompt();'), 'Must submit the composer from the Enter key handler');
+});
+
+test('Agent Workbench HTML: stop is icon-only and updates optimistically', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('<rect width="10" height="10" x="7" y="7" rx="1.5"/>'), 'Must render a stop icon');
+    assert.ok(html.includes('aria-label="Stop"'), 'Must expose an accessible stop label');
+    assert.ok(!html.includes('>Stop</button>'), 'Must not render stop as text');
+    assert.ok(html.includes('function stopRunOptimistically()'), 'Must render the stopped notice before host confirmation');
+    assert.ok(html.includes("text: 'Run stopped.'"), 'Must add the stopped notice optimistically');
+    assert.ok(html.includes('setRunning(false);'), 'Must update stop UI before host confirmation');
+    assert.ok(html.includes("vscode.postMessage({ type: 'agent.stop' });"), 'Must still request runtime stop');
+});
+
+test('Agent Workbench HTML: final stream event releases composer while runtime can finish', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes("event.type === 'final'"), 'Must handle the final stream event');
+    assert.ok(html.includes('runtimeFinalizing = Boolean(event.runtimeFinalizing);'), 'Must remember when DeepAgents is still finalizing after the visible answer');
+    assert.ok(html.includes('Finalizing context before the next run...'), 'Must explain when the native runtime is finalizing after the visible answer');
+    assert.ok(html.includes('setRunning(false);'), 'Must unlock the composer as soon as the final response arrives');
+    assert.ok(html.includes('if (isRunning || runtimeFinalizing)'), 'Must queue immediate follow-up prompts while the native runtime context finalizes');
+    assert.ok(html.includes("if (message.status === 'idle') runtimeFinalizing = false;"), 'Must clear runtime finalization once the host posts idle');
+    assert.ok(html.includes('return isRunning || runtimeFinalizing || hasLiveEntry;'), 'Must reject stale runtime states that would remove the visible final answer while DeepAgents finalizes');
+});
+
+test('Agent Workbench HTML: stop releases inline message actions immediately', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes("function stopRunOptimistically()"), 'Must handle stop optimistically');
+    assert.ok(html.includes("state.session.entries = entries;\n            pendingPrompt = null;\n            renderPendingPrompt();\n            setRunning(false);"), 'Must re-render inline actions as enabled during optimistic stop');
+    assert.ok(!html.includes("stopRunOptimistically();\n            setRunning(false);"), 'Stop click should not rely on a second delayed running-state update');
+});
+
+test('Agent runtime: final response does not wait for post-run checkpoint work', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("await postMessage({ type: 'agent.status', status: 'idle' });\n                postedIdle = true;"), 'Must post idle before slower state refresh work on normal completion');
+    assert.ok(source.includes('saveAutoCheckpointAfterFileModificationInBackground'), 'Must keep auto-checkpoints off the response critical path');
+    assert.ok(!source.includes('await this.saveAutoCheckpointAfterFileModification(service, input, entries);'), 'Must not await auto-checkpoint after emitting the final response');
+});
+
+test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("streamEvents({ messages }, { ...config, version: 'v3' })"), 'Workbench runs must use the DeepAgents v3 run stream');
+    assert.ok(source.includes('consumeDeepAgentV3Run(run, input, entries, sessions.service, postMessage, signal, contextWindowTokens)'), 'Must consume the native v3 run stream directly');
+    assert.ok(source.includes('Promise.resolve(run.output)'), 'Must use native run.output for authoritative completion');
+    assert.ok(source.includes('consumeDeepAgentV3MessageProjection'), 'Must adapt native v3 message projections for UI streaming');
+    assert.ok(source.includes('consumeDeepAgentV3ToolCallProjection'), 'Must adapt native v3 tool-call projections for UI operations');
+    assert.ok(source.includes('run.messages'), 'Must read the native run.messages projection');
+    assert.ok(source.includes('run.toolCalls'), 'Must read the native run.toolCalls projection');
+    assert.ok(source.includes('message.text'), 'Must read the native message.text projection');
+    assert.ok(source.includes('message.reasoning'), 'Must read the native message.reasoning projection');
+    assert.ok(source.includes('message.usage'), 'Must read the native message.usage projection');
+    assert.ok(source.includes("eventName === 'content-block-finish'"), 'Must use native message lifecycle events to detect visible text completion');
+    assert.ok(source.includes('extractContentBlockText(content)'), 'Must finalize visible answers from the completed text block');
+    assert.ok(source.includes('onFinalCandidate'), 'Must emit a visible final response from native message projections');
+    assert.ok(source.includes('runtimeFinalizing'), 'Must distinguish visible completion from authoritative run.output completion');
+    assert.ok(source.includes('deepagents.v3.visible-final'), 'Must log when the visible answer is complete');
+    assert.ok(source.includes('deepagents.v3.run.output resolved'), 'Must log when the authoritative run output resolves');
+    assert.ok(source.includes('visibleDone'), 'Must let follow-up prompts queue once the visible answer is complete');
+
+    const forbiddenLegacyStreamMarkers = [
+        "version: 'v2'",
+        'version: "v2"',
+        'consumeDeepAgentV2Stream',
+        'processDeepAgentStreamEvent',
+        'processDeepAgentV3MessageProjectionEvent',
+        'extractStreamDeltas',
+        'emitContextUsageFromChunk',
+        'getStreamOperationId',
+        'on_chat_model_stream',
+        'on_chat_model_end',
+        'on_tool_start',
+        'on_tool_end',
+        'stream=v2',
+        'linear DeepAgents event stream',
+        'resolveWithTimeout',
+        'waitForDeepAgentV3Sidecars',
+    ];
+    for (const marker of forbiddenLegacyStreamMarkers) {
+        assert.ok(!source.includes(marker), `Workbench runtime must not contain legacy DeepAgents stream marker: ${marker}`);
+    }
+});
+
+test('Agent runtime: LangGraph checkpoints are sharded by thread', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("'langgraph-checkpoints-sharded'"), 'Runtime checkpoints must be stored in the sharded directory');
+    assert.ok(source.includes('flushThread(threadId'), 'Checkpoint writes must flush only the active thread shard');
+    assert.ok(source.includes('version: 2'), 'Shard payloads must use the v2 checkpoint storage format');
+    assert.ok(source.includes('allowLegacy: Boolean(checkpointId)'), 'Legacy monolith migration should only happen for explicit checkpoint restores');
+    assert.ok(!source.includes('storage: this.storage,\n                                writes: this.writes'), 'Checkpoint writes must not rewrite one global monolithic JSON file');
+});
+
+test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/ui/agent-workbench-webview.ts'), 'utf8');
+
+    assert.ok(source.includes('private _stateSequence = 0;'), 'Must version Workbench state messages');
+    assert.ok(source.includes("await this._panel.webview.postMessage({ type: 'agent.state', state: nextState, stateSequence });"), 'Must send critical runtime state before enrichment');
+    assert.ok(source.includes('if (!nextState.isRunning)'), 'Must not enrich stale runtime snapshots while a run is active');
+    assert.ok(source.includes("void this.postWorkbenchState(undefined, { enrich: true })"), 'Must refresh state before background enrichment instead of reusing a stale snapshot');
+    assert.ok(source.includes('await this.postWorkbenchState(message.state, { enrich: false });'), 'Runtime state messages should use the lightweight path');
+});
+
+test('Agent runtime: start state includes checkpointed user message', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    const stateIndex = source.indexOf("await postMessage({ type: 'agent.state', state: await this.getWorkbenchState({ ...input, sessionId: activeRecord.id }) });");
+    const startIndex = source.indexOf("await postMessage({ type: 'agent.streamEvent', event: { type: 'start', sessionId: activeRecord.id, message: prompt } });");
+    assert.ok(stateIndex >= 0, 'Must post the checkpointed user-message state before streaming starts');
+    assert.ok(startIndex > stateIndex, 'The start event must follow the checkpointed state so rewind controls exist during a stopped run');
+});
+
+test('Agent Workbench HTML: user messages expose inline checkpoint rewind', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('function userMessageEntry(entry)'), 'Must render user messages through checkpoint-aware UI');
+    assert.ok(html.includes("wrap.className = 'message-group user-message'"), 'Must place rewind controls below the message bubble');
+    assert.ok(html.includes('justify-content: flex-end;'), 'Must align message action toolbar to the right');
+    assert.ok(html.includes("actions.append(rewind, copy)"), 'Must render a compact two-action message toolbar');
+    assert.ok(html.includes('rewindMessageOptimistically(entry)'), 'Must update the conversation immediately before runtime restore completes');
+    assert.ok(html.includes("type: 'agent.message.rewind'"), 'Must request a rewind from a user message action');
+    assert.ok(html.includes("message.type === 'agent.messageRewind'"), 'Must handle restored prompts from the extension host');
+    assert.ok(html.includes('promptInput.focus()'), 'Must focus the composer after rewinding');
+});
+
+test('Agent Workbench HTML: stale state cannot undo a local rewind', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('const rewoundMessageIds = new Set();'), 'Must remember locally rewound messages');
+    assert.ok(html.includes('rewoundMessageIds.add(entry.id);'), 'Must mark the target message before waiting for host confirmation');
+    assert.ok(html.includes('function acceptIncomingStateMessage(message)'), 'Must gate incoming state messages');
+    assert.ok(html.includes('if (incomingStateContainsRewoundMessage(message.state)) return false;'), 'Must ignore late states that contain rewound messages');
+    assert.ok(html.includes('if (incomingStateDropsLiveEntries(message.state)) return false;'), 'Must ignore stale states that would erase live streamed content');
+    assert.ok(html.includes('if (sequence && sequence < lastStateSequence) return false;'), 'Must ignore out-of-order state updates');
+});
+
+test('Agent Workbench HTML: assistant responses expose a copy action dock', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('function assistantMessageEntry(entry)'), 'Must render assistant responses through a message group');
+    assert.ok(html.includes("wrap.className = 'message-group assistant-message'"), 'Must place assistant actions below the response');
+    assert.ok(html.includes("copy.title = 'Copy response'"), 'Must expose copy as the initial assistant action');
+    assert.ok(html.includes("if (!entry.streaming && entry.text)"), 'Must avoid action docks on still-streaming responses');
 });
 
 test('Agent Workbench HTML: context usage and compaction follow agent runtime contracts', () => {
