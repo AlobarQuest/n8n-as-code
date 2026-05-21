@@ -384,14 +384,16 @@ function spawnDetached(host: string, apiKey: string, distinctId: string, events:
             })).then(results => {
                 if (debug) {
                     try {
-                        require('node:fs').writeFileSync('telemetry-test.log', JSON.stringify({ message: 'Detached sub-process completed', results, events }), 'utf8');
+                        const logPath = require('node:path').join(require('node:os').tmpdir(), 'n8n-as-code-telemetry-debug.log');
+                        require('node:fs').writeFileSync(logPath, JSON.stringify({ message: 'Detached sub-process completed', results, events }), 'utf8');
                     } catch (e) {}
                 }
                 process.exit(0);
             }).catch(err => {
                 if (debug) {
                     try {
-                        require('node:fs').writeFileSync('telemetry-test.log', JSON.stringify({ error: err.message }), 'utf8');
+                        const logPath = require('node:path').join(require('node:os').tmpdir(), 'n8n-as-code-telemetry-debug.log');
+                        require('node:fs').writeFileSync(logPath, JSON.stringify({ error: err.message }), 'utf8');
                     } catch (e) {}
                 }
                 process.exit(1);
