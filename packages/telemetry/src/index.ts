@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
 
 export type TelemetryFacade = 'cli' | 'vscode' | 'mcp' | 'skills' | 'openclaw' | 'claude' | 'docs';
 export type TelemetryEnvironment = 'dev' | 'test' | 'next' | 'prod' | 'ci';
@@ -323,7 +324,7 @@ function debugEvent(event: QueuedEvent): void {
 }
 
 async function sendPostHogEvent(host: string, apiKey: string, distinctId: string, queued: QueuedEvent): Promise<void> {
-    await fetch(`${host}/capture/`, {
+    await fetch(`${host}/i/v0/e/`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -333,6 +334,79 @@ async function sendPostHogEvent(host: string, apiKey: string, distinctId: string
             properties: queued.properties,
         }),
     });
+}
+
+// Global registry for telemetry flushes on process exit
+const GLOBAL_TELEMETRY_QUEUES = Symbol.for('n8n-as-code.telemetry.queues');
+const globalQueues: Array<() => void> = (globalThis as any)[GLOBAL_TELEMETRY_QUEUES] || [];
+if (!(globalThis as any)[GLOBAL_TELEMETRY_QUEUES]) {
+    (globalThis as any)[GLOBAL_TELEMETRY_QUEUES] = globalQueues;
+}
+
+let isExitPatched = false;
+
+function patchProcessExit() {
+    if (isExitPatched) return;
+    isExitPatched = true;
+    const originalExit = process.exit;
+    process.exit = (code?: any): never => {
+        const exitCode = typeof code === 'number' ? code : 0;
+        for (const flush of globalQueues) {
+            try {
+                flush();
+            } catch {
+                // ignore
+            }
+        }
+        return originalExit(exitCode);
+    };
+}
+
+function spawnDetached(host: string, apiKey: string, distinctId: string, events: QueuedEvent[]): void {
+    try {
+        const payload = JSON.stringify({ host, apiKey, distinctId, events });
+        const script = `
+            const { host, apiKey, distinctId, events } = ${payload};
+            const debug = process.env.N8NAC_TELEMETRY_DEBUG === '1';
+            Promise.all(events.map(event => {
+                return fetch(\`\${host}/i/v0/e/\`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        event: event.event,
+                        distinct_id: distinctId,
+                        properties: event.properties,
+                    }),
+                })
+                .then(res => ({ status: res.status, ok: res.ok }))
+                .catch(err => ({ error: err.message }));
+            })).then(results => {
+                if (debug) {
+                    try {
+                        require('node:fs').writeFileSync('telemetry-test.log', JSON.stringify({ message: 'Detached sub-process completed', results, events }), 'utf8');
+                    } catch (e) {}
+                }
+                process.exit(0);
+            }).catch(err => {
+                if (debug) {
+                    try {
+                        require('node:fs').writeFileSync('telemetry-test.log', JSON.stringify({ error: err.message }), 'utf8');
+                    } catch (e) {}
+                }
+                process.exit(1);
+            });
+        `;
+
+        const child = spawn(process.execPath, ['-e', script], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+        });
+        child.unref();
+    } catch {
+        // Never let telemetry block or crash
+    }
 }
 
 export function classifyTelemetryError(error: unknown): ErrorCategory {
@@ -485,6 +559,15 @@ export function createTelemetryClient(context: TelemetryContext): TelemetryClien
     if (created) {
         enqueue('first_seen');
     }
+
+    const flushDetached = () => {
+        if (!status.enabled || queue.length === 0 || !posthogKey) return;
+        const pending = queue.splice(0, queue.length);
+        spawnDetached(posthogHost, posthogKey, config.anonymousId!, pending);
+    };
+
+    globalQueues.push(flushDetached);
+    patchProcessExit();
 
     return client;
 }
