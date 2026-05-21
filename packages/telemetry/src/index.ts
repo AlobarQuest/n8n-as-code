@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export type TelemetryFacade = 'cli' | 'vscode' | 'mcp' | 'skills' | 'openclaw' | 'claude' | 'docs' | 'yagr';
+export type TelemetryFacade = 'cli' | 'vscode' | 'mcp' | 'skills' | 'openclaw' | 'claude' | 'docs';
 export type TelemetryEnvironment = 'dev' | 'test' | 'next' | 'prod' | 'ci';
 export type TelemetryOutcome = 'success' | 'failure' | 'cancelled' | 'skipped';
 export type ErrorCategory =
