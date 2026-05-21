@@ -456,7 +456,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build && npm run prune-package-artifacts",
-    "compile": "tsc -b",
+    "compile": "tsc -b --force",
     "watch": "tsc -b -w",
     "package-bundle": "node esbuild.config.js",
     "copy-assets": "node scripts/copy-assets.mjs",

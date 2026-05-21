@@ -17,15 +17,9 @@ const managerCoreAgentToolingPaths = new Set([
     managerCoreAgentToolingPath,
     fs.existsSync(managerCoreAgentToolingPath) ? fs.realpathSync(managerCoreAgentToolingPath) : managerCoreAgentToolingPath,
 ]);
-const runtimeDependencyRoots = [
-    'deepagents',
-    '@langchain/anthropic',
-    '@langchain/google-genai',
-    '@langchain/langgraph',
-    '@langchain/langgraph-checkpoint',
-    '@langchain/mistralai',
-    '@langchain/openai',
-];
+const runtimeDependencyRoots = Object.keys(
+    JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).dependencies || {}
+);
 const bundledSkillsAssetFiles = new Set([
     'n8n-docs-complete.json',
     'n8n-knowledge-index.json',
@@ -99,9 +93,46 @@ function copyRuntimeDependency(packageName, targetNodeModulesDir) {
     const targetDir = path.join(targetNodeModulesDir, ...packageNameToParts(packageName));
     fs.mkdirSync(path.dirname(targetDir), { recursive: true });
     fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.cpSync(fs.realpathSync(sourceDir), targetDir, {
+
+    const realSourceDir = fs.realpathSync(sourceDir);
+    const workspacePackagesDir = path.resolve(__dirname, '..');
+    const packageJson = readPackageJson(realSourceDir);
+    const isWorkspacePackage = realSourceDir.startsWith(`${workspacePackagesDir}${path.sep}`);
+
+    if (isWorkspacePackage && Array.isArray(packageJson.files) && packageJson.files.length > 0) {
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.copyFileSync(path.join(realSourceDir, 'package.json'), path.join(targetDir, 'package.json'));
+        for (const entry of packageJson.files) {
+            if (entry.includes('*')) {
+                continue;
+            }
+            const sourcePath = path.join(realSourceDir, entry);
+            if (!fs.existsSync(sourcePath)) {
+                continue;
+            }
+            const targetPath = path.join(targetDir, entry);
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.cpSync(sourcePath, targetPath, { recursive: true, dereference: true });
+        }
+        const binEntries = typeof packageJson.bin === 'string'
+            ? [packageJson.bin]
+            : Object.values(packageJson.bin || {});
+        for (const entry of binEntries) {
+            const sourcePath = path.join(realSourceDir, entry);
+            if (!fs.existsSync(sourcePath)) {
+                continue;
+            }
+            const targetPath = path.join(targetDir, entry);
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.cpSync(sourcePath, targetPath, { recursive: true, dereference: true });
+        }
+        return;
+    }
+
+    fs.cpSync(realSourceDir, targetDir, {
         recursive: true,
         dereference: true,
+        filter: source => !path.relative(realSourceDir, source).split(path.sep).includes('node_modules'),
     });
 }
 
@@ -149,134 +180,148 @@ try {
     }
 } catch { /* ignore */ }
 
-// Plugin to copy skills assets and CLI assets
-const copySkillsAssets = {
-    name: 'copy-skills-assets',
-    setup(build) {
-        build.onEnd(() => {
-            const assetDirCandidates = [
-                path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'assets'),
-                path.join(__dirname, '..', 'skills', 'dist', 'assets'),
-                path.join(__dirname, '..', 'skills', 'src', 'assets'),
-                path.join(__dirname, 'assets'),
-            ];
-            const hasRequiredSkillsAssets = dir => (
-                bundledSkillsAssetFiles.size > 0
-                && [...bundledSkillsAssetFiles].every(file => fs.existsSync(path.join(dir, file)))
-            );
-            const sourceDir = assetDirCandidates.find(hasRequiredSkillsAssets);
-            const targetDir = path.join(__dirname, 'assets');
+function copySkillsAssets() {
+    const assetDirCandidates = [
+        path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'assets'),
+        path.join(__dirname, '..', 'skills', 'dist', 'assets'),
+        path.join(__dirname, '..', 'skills', 'src', 'assets'),
+        path.join(__dirname, 'assets'),
+    ];
+    const hasRequiredSkillsAssets = dir => (
+        bundledSkillsAssetFiles.size > 0
+        && [...bundledSkillsAssetFiles].every(file => fs.existsSync(path.join(dir, file)))
+    );
+    const sourceDir = assetDirCandidates.find(hasRequiredSkillsAssets);
+    const targetDir = path.join(__dirname, 'assets');
 
-            if (!sourceDir) {
-                throw new Error(
-                    'skills assets not found; run `npm run build:extension` from the repository root. Checked:\n' +
-                    assetDirCandidates.map(p => `  ${p}`).join('\n')
-                );
-            } else {
-                // Create target directory
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
+    if (!sourceDir) {
+        throw new Error(
+            'skills assets not found; run `npm run build:extension` from the repository root. Checked:\n' +
+            assetDirCandidates.map(p => `  ${p}`).join('\n')
+        );
+    } else {
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+        }
 
-                for (const file of fs.readdirSync(targetDir)) {
-                    if (file.endsWith('.json') && !bundledSkillsAssetFiles.has(file)) {
-                        fs.rmSync(path.join(targetDir, file), { force: true });
-                    }
-                }
-
-                // Copy JSON files
-                const files = fs.readdirSync(sourceDir).filter(f => bundledSkillsAssetFiles.has(f));
-                for (const file of files) {
-                    const src = path.join(sourceDir, file);
-                    const dest = path.join(targetDir, file);
-                    fs.copyFileSync(src, dest);
-                    console.log(`✅ Copied ${file} to assets/`);
-                }
+        for (const file of fs.readdirSync(targetDir)) {
+            if (file.endsWith('.json') && !bundledSkillsAssetFiles.has(file)) {
+                fs.rmSync(path.join(targetDir, file), { force: true });
             }
+        }
 
-            // Copy canonical agent skills so the bundled AiContextGenerator can
-            // materialize .agents/skills in user workspaces. The bundled generator
-            // resolves these relative to out/extension.js.
-            const skillsDirCandidates = [
-                path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'agent-skills'),
-                path.join(__dirname, '..', 'skills', 'src', 'agent-skills'),
-                path.join(__dirname, '..', 'skills', 'dist', 'agent-skills'),
-            ];
-            const skillsDirSrc = skillsDirCandidates.find(p => fs.existsSync(p));
-            const bundledSkillsTargetDir = path.join(__dirname, 'out', 'agent-skills');
-            if (!skillsDirSrc) {
-                console.warn(
-                    '⚠️  agent skills not found — AiContextGenerator will be unable to ' +
-                    'write .agents/skills to user workspaces. Checked:\n' +
-                    skillsDirCandidates.map(p => `  ${p}`).join('\n')
-                );
-            } else {
-                fs.rmSync(bundledSkillsTargetDir, { recursive: true, force: true });
-                fs.cpSync(skillsDirSrc, bundledSkillsTargetDir, { recursive: true });
-                console.log('✅ Copied agent skills to out/agent-skills/');
-            }
-
-            // Copy n8n-workflows.d.ts so WorkspaceSetupService can locate it when
-            // n8nac is bundled into out/extension.js (resolveAssetPath looks at
-            // path.join(__dirname, '..', 'assets') relative to the bundle, which
-            // resolves to the extension's top-level assets/ directory).
-            //
-            // Candidate paths (in order):
-            //   1. node_modules/n8nac/dist/core/assets/ — installed npm package layout
-            //      (n8nac package.json "files": ["dist/"], build copies the .d.ts there)
-            //   2. ../cli/dist/core/assets/             — local workspace after `npm run build`
-            //   3. ../cli/src/core/assets/              — local workspace source (dev fallback)
-            const declarationFileCandidates = [
-                path.join(__dirname, 'node_modules', 'n8nac', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
-                path.join(__dirname, '..', 'cli', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
-                path.join(__dirname, '..', 'cli', 'src', 'core', 'assets', 'n8n-workflows.d.ts'),
-            ];
-            const declarationFileSrc = declarationFileCandidates.find(p => fs.existsSync(p));
-            if (!declarationFileSrc) {
-                console.warn(
-                    '⚠️  n8n-workflows.d.ts not found — WorkspaceSetupService will be unable to ' +
-                    'write the TypeScript stub to user workspaces. Checked:\n' +
-                    declarationFileCandidates.map(p => `  ${p}`).join('\n')
-                );
-            } else {
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
-                const declarationFileDest = path.join(targetDir, 'n8n-workflows.d.ts');
-                fs.copyFileSync(declarationFileSrc, declarationFileDest);
-                console.log('✅ Copied n8n-workflows.d.ts to assets/');
-            }
-
-            const targetNodeModulesDir = path.join(__dirname, 'out', 'node_modules');
-            fs.rmSync(targetNodeModulesDir, { recursive: true, force: true });
-            const runtimeDependencies = collectRuntimeDependencyClosure(runtimeDependencyRoots);
-            for (const packageName of runtimeDependencies) {
-                copyRuntimeDependency(packageName, targetNodeModulesDir);
-            }
-            console.log(`✅ Copied ${runtimeDependencies.length} runtime dependencies to node_modules/`);
-        });
+        const files = fs.readdirSync(sourceDir).filter(f => bundledSkillsAssetFiles.has(f));
+        for (const file of files) {
+            const src = path.join(sourceDir, file);
+            const dest = path.join(targetDir, file);
+            fs.copyFileSync(src, dest);
+            console.log(`✅ Copied ${file} to assets/`);
+        }
     }
-};
 
-// Build configuration for Extension
-const extensionBuild = esbuild.build({
-    entryPoints: ['./src/extension.ts'],
-    bundle: true,
-    outfile: 'out/extension.js',
-    external: ['vscode', 'prettier', 'deepagents', 'langchain', '@langchain/*'],
-    format: 'cjs',
-    platform: 'node',
-    logOverride: {
-        'empty-import-meta': 'silent'
-    },
-    define: {
-        // 'next' on pre-release builds, '' on stable — drives npx dist-tag in AGENTS.md
-        '__N8NAC_VERSION__': JSON.stringify(n8nacVersion),
-        // Installed n8nac CLI semver — stamped into AGENTS.md for stale-detection
-        '__N8NAC_CLI_SEMVER__': JSON.stringify(n8nacCliSemver),
-    },
-    plugins: [preserveManagerCoreEntrypointResolution, copySkillsAssets]
-});
+    const skillsDirCandidates = [
+        path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'agent-skills'),
+        path.join(__dirname, '..', 'skills', 'src', 'agent-skills'),
+        path.join(__dirname, '..', 'skills', 'dist', 'agent-skills'),
+    ];
+    const skillsDirSrc = skillsDirCandidates.find(p => fs.existsSync(p));
+    const bundledSkillsTargetDir = path.join(__dirname, 'out', 'agent-skills');
+    if (!skillsDirSrc) {
+        console.warn(
+            '⚠️  agent skills not found — AiContextGenerator will be unable to ' +
+            'write .agents/skills to user workspaces. Checked:\n' +
+            skillsDirCandidates.map(p => `  ${p}`).join('\n')
+        );
+    } else {
+        fs.rmSync(bundledSkillsTargetDir, { recursive: true, force: true });
+        fs.cpSync(skillsDirSrc, bundledSkillsTargetDir, { recursive: true });
+        console.log('✅ Copied agent skills to out/agent-skills/');
+    }
+
+    const declarationFileCandidates = [
+        path.join(__dirname, 'node_modules', 'n8nac', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
+        path.join(__dirname, '..', 'cli', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
+        path.join(__dirname, '..', 'cli', 'src', 'core', 'assets', 'n8n-workflows.d.ts'),
+    ];
+    const declarationFileSrc = declarationFileCandidates.find(p => fs.existsSync(p));
+    if (!declarationFileSrc) {
+        console.warn(
+            '⚠️  n8n-workflows.d.ts not found — WorkspaceSetupService will be unable to ' +
+            'write the TypeScript stub to user workspaces. Checked:\n' +
+            declarationFileCandidates.map(p => `  ${p}`).join('\n')
+        );
+    } else {
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+        }
+        const declarationFileDest = path.join(targetDir, 'n8n-workflows.d.ts');
+        fs.copyFileSync(declarationFileSrc, declarationFileDest);
+        console.log('✅ Copied n8n-workflows.d.ts to assets/');
+    }
+}
+
+function copyRuntimeDependencies() {
+    const targetNodeModulesDir = path.join(__dirname, 'out', 'node_modules');
+    fs.rmSync(targetNodeModulesDir, { recursive: true, force: true });
+    const runtimeDependencies = collectRuntimeDependencyClosure(runtimeDependencyRoots);
+    for (const packageName of runtimeDependencies) {
+        copyRuntimeDependency(packageName, targetNodeModulesDir);
+    }
+    fs.rmSync(path.join(targetNodeModulesDir, '@n8n-as-code', 'skills', 'dist', 'assets'), { recursive: true, force: true });
+    console.log(`✅ Copied ${runtimeDependencies.length} runtime dependencies to node_modules/`);
+}
+
+function writeSplitExtensionEntrypoint() {
+    const extensionPath = path.join(__dirname, 'out', 'extension.js');
+    const extensionMapPath = path.join(__dirname, 'out', 'extension.js.map');
+    const runtimePath = path.join(__dirname, 'out', 'extension-runtime.js');
+    const runtimeMapPath = path.join(__dirname, 'out', 'extension-runtime.js.map');
+
+    if (!fs.existsSync(extensionPath)) {
+        throw new Error('out/extension.js is missing; run `npm run compile` before `npm run package-bundle`.');
+    }
+
+    let runtimeSource = fs.readFileSync(extensionPath, 'utf8');
+    const buildConstants = [
+        `const __N8NAC_VERSION__ = ${JSON.stringify(n8nacVersion)};`,
+        `const __N8NAC_CLI_SEMVER__ = ${JSON.stringify(n8nacCliSemver)};`,
+    ].join('\n');
+    runtimeSource = runtimeSource.replace(
+        /^"use strict";\n/,
+        `"use strict";\n${buildConstants}\n`
+    );
+    runtimeSource = runtimeSource.replace('//# sourceMappingURL=extension.js.map', '//# sourceMappingURL=extension-runtime.js.map');
+    fs.writeFileSync(runtimePath, runtimeSource);
+
+    if (fs.existsSync(extensionMapPath)) {
+        fs.renameSync(extensionMapPath, runtimeMapPath);
+    }
+
+    fs.writeFileSync(extensionPath, `'use strict';
+Object.defineProperty(exports, '__esModule', { value: true });
+exports.activate = activate;
+exports.deactivate = deactivate;
+const path = require('node:path');
+process.env.N8N_AS_CODE_ASSETS_DIR ??= path.join(__dirname, '..', 'assets');
+const runtime = require('./extension-runtime.js');
+async function activate(context) {
+  return runtime.activate(context);
+}
+function deactivate() {
+  return typeof runtime.deactivate === 'function' ? runtime.deactivate() : undefined;
+}
+//# sourceMappingURL=extension.js.map
+`);
+    fs.writeFileSync(extensionMapPath, JSON.stringify({
+        version: 3,
+        file: 'extension.js',
+        sources: ['extension.ts'],
+        names: [],
+        mappings: '',
+    }));
+
+    console.log('✅ Split VS Code extension entrypoint into out/extension.js and out/extension-runtime.js');
+}
 
 const localOpenBridgeBuild = esbuild.build({
     entryPoints: ['./src/local-open-bridge-entrypoint.ts'],
@@ -296,4 +341,10 @@ const settingsWebviewBuild = esbuild.build({
     target: ['es2022'],
 });
 
-Promise.all([extensionBuild, localOpenBridgeBuild, settingsWebviewBuild]).catch(() => process.exit(1));
+Promise.all([localOpenBridgeBuild, settingsWebviewBuild])
+    .then(() => {
+        copySkillsAssets();
+        copyRuntimeDependencies();
+        writeSplitExtensionEntrypoint();
+    })
+    .catch(() => process.exit(1));
