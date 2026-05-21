@@ -350,7 +350,6 @@ function patchProcessExit() {
     isExitPatched = true;
     const originalExit = process.exit;
     process.exit = (code?: any): never => {
-        const exitCode = typeof code === 'number' ? code : 0;
         for (const flush of globalQueues) {
             try {
                 flush();
@@ -358,7 +357,7 @@ function patchProcessExit() {
                 // ignore
             }
         }
-        return originalExit(exitCode);
+        return originalExit(code);
     };
 }
 
