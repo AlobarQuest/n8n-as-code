@@ -3,30 +3,27 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
-const REQUIRED_ASSETS = [
-    'n8n-docs-complete.json',
-    'n8n-knowledge-index.json',
-    'n8n-nodes-technical.json',
-    'workflows-index.json',
+const REQUIRED_AGENT_SKILLS = [
+    path.join('n8n-architect', 'SKILL.md'),
 ];
 
 const candidateDirs = [
-    path.join(ROOT_DIR, 'packages', 'skills', 'dist', 'assets'),
-    path.join(ROOT_DIR, 'packages', 'skills', 'src', 'assets'),
-    path.join(ROOT_DIR, 'packages', 'vscode-extension', 'assets'),
+    path.join(ROOT_DIR, 'packages', 'skills', 'dist', 'agent-skills'),
+    path.join(ROOT_DIR, 'packages', 'skills', 'src', 'agent-skills'),
+    path.join(ROOT_DIR, 'packages', 'vscode-extension', 'out', 'agent-skills'),
 ];
 
-function hasRequiredAssets(dir) {
-    return REQUIRED_ASSETS.every(file => fs.existsSync(path.join(dir, file)));
+function hasRequiredAgentSkills(dir) {
+    return REQUIRED_AGENT_SKILLS.every(file => fs.existsSync(path.join(dir, file)));
 }
 
 function rel(filePath) {
     return path.relative(ROOT_DIR, filePath) || '.';
 }
 
-const existingAssetsDir = candidateDirs.find(hasRequiredAssets);
-if (existingAssetsDir) {
-    console.log(`✅ Skills assets available at ${rel(existingAssetsDir)}`);
+const existingAgentSkillsDir = candidateDirs.find(hasRequiredAgentSkills);
+if (existingAgentSkillsDir) {
+    console.log(`✅ Agent skills available at ${rel(existingAgentSkillsDir)}`);
     process.exit(0);
 }
 
@@ -40,7 +37,7 @@ if (nodeMajor >= 26) {
     process.exit(1);
 }
 
-console.log('🧱 Skills assets are missing; generating them from packages/skills...');
+console.log('🧱 Agent skills are missing; generating them from packages/skills...');
 const result = spawnSync(
     process.platform === 'win32' ? 'npm.cmd' : 'npm',
     ['run', 'build', '--workspace=packages/skills'],

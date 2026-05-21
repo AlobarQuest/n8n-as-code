@@ -20,7 +20,7 @@ const managerCoreAgentToolingPaths = new Set([
 const runtimeDependencyRoots = Object.keys(
     JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).dependencies || {}
 );
-const bundledSkillsAssetFiles = new Set([
+const legacyBundledSkillsAssetFiles = new Set([
     'n8n-docs-complete.json',
     'n8n-knowledge-index.json',
     'n8n-nodes-technical.json',
@@ -181,42 +181,14 @@ try {
 } catch { /* ignore */ }
 
 function copySkillsAssets() {
-    const assetDirCandidates = [
-        path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'assets'),
-        path.join(__dirname, '..', 'skills', 'dist', 'assets'),
-        path.join(__dirname, '..', 'skills', 'src', 'assets'),
-        path.join(__dirname, 'assets'),
-    ];
-    const hasRequiredSkillsAssets = dir => (
-        bundledSkillsAssetFiles.size > 0
-        && [...bundledSkillsAssetFiles].every(file => fs.existsSync(path.join(dir, file)))
-    );
-    const sourceDir = assetDirCandidates.find(hasRequiredSkillsAssets);
     const targetDir = path.join(__dirname, 'assets');
 
-    if (!sourceDir) {
-        throw new Error(
-            'skills assets not found; run `npm run build:extension` from the repository root. Checked:\n' +
-            assetDirCandidates.map(p => `  ${p}`).join('\n')
-        );
-    } else {
-        if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
-        }
+    if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+    }
 
-        for (const file of fs.readdirSync(targetDir)) {
-            if (file.endsWith('.json') && !bundledSkillsAssetFiles.has(file)) {
-                fs.rmSync(path.join(targetDir, file), { force: true });
-            }
-        }
-
-        const files = fs.readdirSync(sourceDir).filter(f => bundledSkillsAssetFiles.has(f));
-        for (const file of files) {
-            const src = path.join(sourceDir, file);
-            const dest = path.join(targetDir, file);
-            fs.copyFileSync(src, dest);
-            console.log(`✅ Copied ${file} to assets/`);
-        }
+    for (const file of legacyBundledSkillsAssetFiles) {
+        fs.rmSync(path.join(targetDir, file), { force: true });
     }
 
     const skillsDirCandidates = [
@@ -227,8 +199,8 @@ function copySkillsAssets() {
     const skillsDirSrc = skillsDirCandidates.find(p => fs.existsSync(p));
     const bundledSkillsTargetDir = path.join(__dirname, 'out', 'agent-skills');
     if (!skillsDirSrc) {
-        console.warn(
-            '⚠️  agent skills not found — AiContextGenerator will be unable to ' +
+        throw new Error(
+            'agent skills not found — AiContextGenerator will be unable to ' +
             'write .agents/skills to user workspaces. Checked:\n' +
             skillsDirCandidates.map(p => `  ${p}`).join('\n')
         );
