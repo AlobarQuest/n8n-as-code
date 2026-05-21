@@ -2,8 +2,8 @@
 'use strict';
 
 /**
- * Reads the resolved n8n tag from the cache metadata written by ensure-n8n-cache.cjs
- * and stamps it as the `n8nVersion` field in packages/skills/package.json.
+ * Resolves the same n8n stable tag as ensure-n8n-cache.cjs and stamps it as the
+ * `n8nVersion` field in packages/skills/package.json.
  *
  * This allows consumers to know which n8n version the skills index was built against
  * (visible on npm and in the CHANGELOG), addressing #271.
@@ -14,10 +14,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const CACHE_METADATA_PATH = path.join(ROOT_DIR, '.n8n-cache', '.cache-metadata.json');
 const SKILLS_PACKAGE_JSON_PATH = path.join(ROOT_DIR, 'packages', 'skills', 'package.json');
+const ENSURE_N8N_CACHE_PATH = path.join(ROOT_DIR, 'scripts', 'ensure-n8n-cache.cjs');
 
 function readCacheMetadata() {
     if (!fs.existsSync(CACHE_METADATA_PATH)) {
@@ -35,8 +37,21 @@ function resolveTagFromEnv() {
     return process.env.N8N_VERSION || process.env.N8N_STABLE_TAG || null;
 }
 
+function resolveTagFromStableResolver() {
+    try {
+        return execFileSync(process.execPath, [ENSURE_N8N_CACHE_PATH, '--print-tag'], {
+            cwd: ROOT_DIR,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim() || null;
+    } catch (error) {
+        console.warn(`⚠️  Could not resolve current n8n stable tag: ${error.message}`);
+        return null;
+    }
+}
+
 function resolveN8nTag() {
-    return resolveTagFromEnv() || readCacheMetadata()?.resolvedTag || null;
+    return resolveTagFromEnv() || resolveTagFromStableResolver() || readCacheMetadata()?.resolvedTag || null;
 }
 
 function getJsonIndent(content) {
