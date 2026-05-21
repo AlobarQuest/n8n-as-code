@@ -290,8 +290,11 @@ test('CLI skills assets: extension bundles only runtime-required agent assets', 
 
     assert.ok(rootPackage.scripts['build:extension'].includes('ensure-extension-skills-assets.cjs'), 'Extension build must verify agent skills before bundling');
     assert.ok(ensureExtensionAssetsSource.includes('hasRequiredAgentSkills'), 'Extension build preflight must verify agent skills before bundling');
+    assert.ok(!ensureExtensionAssetsSource.includes("'vscode-extension', 'out', 'agent-skills'"), 'Extension build preflight must not accept prior build output as an agent skill source');
     assert.ok(extensionBuildSource.includes('legacyBundledSkillsAssetFiles'), 'Extension bundler must remove legacy generated JSON assets from VSIX assets');
     assert.ok(extensionBuildSource.includes("fs.rmSync(path.join(targetDir, file), { force: true })"), 'Extension bundler must prune legacy generated JSON assets');
+    assert.ok(extensionBuildSource.includes('throw new Error('), 'Extension bundler must fail when canonical agent skills are missing');
+    assert.ok(!extensionBuildSource.includes("console.warn(\n                    '⚠️  agent skills not found"), 'Extension bundler must not silently continue without canonical agent skills');
     assert.ok(!extensionBuildSource.includes('hasRequiredSkillsAssets'), 'Extension bundler must not require generated skills JSON assets');
     assert.ok(!extensionBuildSource.includes('skills assets not found; run `npm run build:extension`'), 'Extension bundler must not fail on missing generated skills JSON assets');
     assert.ok(cliSource.includes('hasRequiredAssets'), 'CLI must verify skills asset directories before selecting them');

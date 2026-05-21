@@ -10,7 +10,6 @@ const REQUIRED_AGENT_SKILLS = [
 const candidateDirs = [
     path.join(ROOT_DIR, 'packages', 'skills', 'dist', 'agent-skills'),
     path.join(ROOT_DIR, 'packages', 'skills', 'src', 'agent-skills'),
-    path.join(ROOT_DIR, 'packages', 'vscode-extension', 'out', 'agent-skills'),
 ];
 
 function hasRequiredAgentSkills(dir) {
