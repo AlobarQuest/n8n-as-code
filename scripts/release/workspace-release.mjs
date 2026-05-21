@@ -334,14 +334,6 @@ function buildNextVscodeStableVersion(version, bump) {
     };
   }
 
-  if (bump === 'patch') {
-    return {
-      major: version.major,
-      minor: version.minor,
-      patch: version.patch + 1,
-    };
-  }
-
   return {
     major: version.major,
     minor: getNextEvenMinor(version.minor),
@@ -349,10 +341,10 @@ function buildNextVscodeStableVersion(version, bump) {
   };
 }
 
-function buildVscodePrereleaseVersion(stableVersion, sequence) {
+function buildVscodePrereleaseVersion(baseVersion, sequence) {
   return formatVersion({
-    major: stableVersion.major,
-    minor: getNextOddMinor(stableVersion.minor),
+    major: baseVersion.major,
+    minor: baseVersion.minor % 2 === 0 ? getNextOddMinor(baseVersion.minor) : baseVersion.minor,
     patch: Math.max(1, sequence),
   });
 }
@@ -387,8 +379,8 @@ function getVscodeMarketplaceVersions() {
   }
 }
 
-function getLatestMarketplaceVscodePrereleaseSequence(stableTargetVersion) {
-  const prereleaseLine = parseVersion(buildVscodePrereleaseVersion(stableTargetVersion, 1));
+function getLatestMarketplaceVscodePrereleaseSequence(baseVersion) {
+  const prereleaseLine = parseVersion(buildVscodePrereleaseVersion(baseVersion, 1));
   if (!prereleaseLine) {
     return 0;
   }
@@ -840,7 +832,7 @@ function computeStablePlan() {
     if (versionAheadOfTag && !reasons.includes('version-ahead-of-tag')) {
       reasons.push('version-ahead-of-tag');
     }
-    if (pkg.publishTarget === 'vscode' && changed && bumpInfo.bump !== 'patch' && !versionAheadOfTag && !reasons.includes('stable-vscode-even-minor-line')) {
+    if (pkg.publishTarget === 'vscode' && changed && !versionAheadOfTag && !reasons.includes('stable-vscode-even-minor-line')) {
       reasons.push('stable-vscode-even-minor-line');
     }
 
@@ -872,7 +864,7 @@ function getPrereleaseSequence(stablePlan) {
     : 1;
   const extensionPlan = stablePlan.packages.find(pkg => pkg.publishTarget === 'vscode');
   const latestMarketplaceSequence = extensionPlan?.changed
-    ? getLatestMarketplaceVscodePrereleaseSequence(parseVersion(extensionPlan.targetVersion))
+    ? getLatestMarketplaceVscodePrereleaseSequence(parseVersion(extensionPlan.currentVersion))
     : 0;
 
   return Math.max(1, commitCount, latestMarketplaceSequence + 1);
@@ -892,7 +884,7 @@ function computePrereleasePlan() {
     return {
       ...pkg,
       prereleaseVersion: pkg.publishTarget === 'vscode'
-        ? buildVscodePrereleaseVersion(parseVersion(pkg.targetVersion), sequence)
+        ? buildVscodePrereleaseVersion(parseVersion(pkg.currentVersion), sequence)
         : `${pkg.targetVersion}-next.${sequence}`,
     };
   });
