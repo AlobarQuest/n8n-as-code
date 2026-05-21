@@ -529,7 +529,6 @@ export class AgentWorkbenchWebview {
                     await this._agentRuntime.setActiveWorktreePath(undefined);
                 }
                 this._outputChannel.appendLine(`[n8n-agent-debug] Worktree removed path=${payload.path}`);
-                fs.promises.rm(payload.path, { recursive: true, force: true }).catch(() => {});
             } catch (error: any) {
                 const message = error?.message || String(error);
                 this._outputChannel.appendLine(`[n8n-agent] Worktree remove error: ${message}`);
