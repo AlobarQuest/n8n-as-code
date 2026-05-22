@@ -233,6 +233,17 @@ test('Agent runtime: provider middleware flattens unsupported complex content bl
     assert.ok(source.includes("block.type !== 'text' && block.type !== 'image_url'"), 'Only text and image_url complex blocks can pass through to strict adapters such as Mistral');
 });
 
+test('Agent runtime: filesystem backend tells models to use real workspace paths', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(!source.includes('virtualMode: true'), 'VS Code agent must keep real workspace absolute paths usable');
+    assert.ok(source.includes('Use real workspace paths'), 'System prompt must tell models to use real workspace paths');
+    assert.ok(source.includes('Do not use pseudo-root paths like /workflows/'), 'System prompt must prevent pseudo-root paths from escaping the workspace');
+    assert.ok(source.includes('Do not create raw n8n workflow JSON'), 'System prompt must prevent weak models from authoring JSON workflows by default');
+});
+
 test('Agent runtime: Codex v3 output adapter reads provider output items', () => {
     const fs = require('node:fs');
     const path = require('node:path');
