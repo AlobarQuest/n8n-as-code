@@ -201,18 +201,30 @@ jobs:
           fi
           cd packages/vscode-extension
           if compgen -G "*.vsix" > /dev/null; then
-            if npx ovsx publish *.vsix -p "$OVSX_TOKEN" > ovsx-publish.log 2>&1; then
-              cat ovsx-publish.log
-            else
+            max_attempts=3
+            attempt=1
+            while true; do
+              if npx ovsx publish *.vsix -p "$OVSX_TOKEN" > ovsx-publish.log 2>&1; then
+                cat ovsx-publish.log
+                break
+              fi
+
               status=$?
               cat ovsx-publish.log
               if grep -Eqi 'already (exists|published)|version .* already' ovsx-publish.log; then
                 VERSION=$(node -p "require('./package.json').version")
                 echo "ℹ️ Open VSX already contains $VERSION, skipping publish."
-              else
-                exit "$status"
+                break
               fi
-            fi
+              if grep -Eqi 'status 5[0-9][0-9]|Service Unavailable|Bad Gateway|Gateway Timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up' ovsx-publish.log && [[ "$attempt" -lt "$max_attempts" ]]; then
+                delay=$((attempt * 30))
+                echo "⚠️ Open VSX publish failed with a transient error. Retrying in ${delay}s (attempt ${attempt}/${max_attempts})..."
+                sleep "$delay"
+                attempt=$((attempt + 1))
+                continue
+              fi
+              exit "$status"
+            done
           else
             echo "⚠️ No VSIX artifact found, skipping Open VSX publish."
           fi
