@@ -1,6 +1,7 @@
 import * as http from 'http';
 import * as os from 'os';
-import httpProxy = require('http-proxy');
+import HttpProxy from 'http-proxy';
+import type HttpProxyServer = require('http-proxy');
 import type * as vscode from 'vscode';
 import { AddressInfo } from 'net';
 import { randomUUID } from 'crypto';
@@ -18,7 +19,7 @@ type ExternalAuthSession = {
 
 export class ProxyService {
     private server: http.Server | undefined;
-    private proxy: httpProxy | undefined;
+    private proxy: HttpProxyServer | undefined;
     private wsServer: WebSocketServer | undefined;
     private port: number = 0;
     private target: string = '';
@@ -421,7 +422,7 @@ export class ProxyService {
         // Load persisted cookies
         await this.loadCookies();
 
-        this.proxy = httpProxy.createProxyServer({
+        this.proxy = HttpProxy.createProxyServer({
             target: this.target,
             changeOrigin: true,
             secure: false,

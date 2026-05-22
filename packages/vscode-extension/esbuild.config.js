@@ -31,20 +31,21 @@ function packageNameToParts(packageName) {
     return packageName.startsWith('@') ? packageName.split('/') : [packageName];
 }
 
-function getPackageDir(packageName) {
+function getPackageDir(packageName, fromDir) {
     const parts = packageNameToParts(packageName);
     try {
         const packageJsonPath = require.resolve(`${packageName}/package.json`, {
-            paths: [__dirname, path.join(__dirname, '..', '..')],
+            paths: [fromDir, __dirname, path.join(__dirname, '..', '..')].filter(Boolean),
         });
         return path.dirname(packageJsonPath);
     } catch {
         // Fall back to direct node_modules probing below.
     }
     const candidates = [
+        fromDir ? path.join(fromDir, 'node_modules', ...parts) : undefined,
         path.join(__dirname, '..', '..', 'node_modules', ...parts),
         path.join(__dirname, 'node_modules', ...parts),
-    ];
+    ].filter(Boolean);
     return candidates.find(candidate => fs.existsSync(path.join(candidate, 'package.json')));
 }
 
@@ -53,35 +54,50 @@ function readPackageJson(packageDir) {
 }
 
 function collectRuntimeDependencyClosure(packageNames) {
-    const seen = new Set();
-    const queue = [...packageNames];
+    const seenPackageDirs = new Set();
+    const seenPackageNames = new Set();
+    const queue = packageNames.map(packageName => ({ packageName, fromDir: __dirname }));
 
     while (queue.length > 0) {
-        const packageName = queue.shift();
-        if (!packageName || seen.has(packageName)) {
+        const entry = queue.shift();
+        const packageName = entry?.packageName;
+        if (!packageName) {
             continue;
         }
 
-        const packageDir = getPackageDir(packageName);
+        const packageDir = getPackageDir(packageName, entry.fromDir);
         if (!packageDir) {
             console.warn(`⚠️  runtime dependency not installed, skipping copy: ${packageName}`);
             continue;
         }
+        const realPackageDir = fs.realpathSync(packageDir);
+        if (seenPackageDirs.has(realPackageDir)) {
+            continue;
+        }
 
-        seen.add(packageName);
+        seenPackageDirs.add(realPackageDir);
+        seenPackageNames.add(packageName);
+        const copiedPackageDir = getPackageDir(packageName, __dirname);
+        if (copiedPackageDir) {
+            const realCopiedPackageDir = fs.realpathSync(copiedPackageDir);
+            if (!seenPackageDirs.has(realCopiedPackageDir)) {
+                queue.push({ packageName, fromDir: __dirname });
+            }
+        }
         const packageJson = readPackageJson(packageDir);
         const dependencyNames = [
             ...Object.keys(packageJson.dependencies || {}),
             ...Object.keys(packageJson.optionalDependencies || {}),
         ];
         for (const dependencyName of dependencyNames) {
-            if (!seen.has(dependencyName) && getPackageDir(dependencyName)) {
-                queue.push(dependencyName);
+            const dependencyDir = getPackageDir(dependencyName, realPackageDir);
+            if (dependencyDir && !seenPackageDirs.has(fs.realpathSync(dependencyDir))) {
+                queue.push({ packageName: dependencyName, fromDir: realPackageDir });
             }
         }
     }
 
-    return [...seen].sort();
+    return [...seenPackageNames].sort();
 }
 
 function copyRuntimeDependency(packageName, targetNodeModulesDir) {
@@ -245,28 +261,35 @@ function copyRuntimeDependencies() {
 function writeSplitExtensionEntrypoint() {
     const extensionPath = path.join(__dirname, 'out', 'extension.js');
     const extensionMapPath = path.join(__dirname, 'out', 'extension.js.map');
-    const runtimePath = path.join(__dirname, 'out', 'extension-runtime.js');
-    const runtimeMapPath = path.join(__dirname, 'out', 'extension-runtime.js.map');
+    const runtimePath = path.join(__dirname, 'out', 'extension-runtime.mjs');
+    const runtimeMapPath = path.join(__dirname, 'out', 'extension-runtime.mjs.map');
+    const staleCommonJsRuntimePath = path.join(__dirname, 'out', 'extension-runtime.js');
+    const staleCommonJsRuntimeMapPath = path.join(__dirname, 'out', 'extension-runtime.js.map');
 
     if (!fs.existsSync(extensionPath)) {
         throw new Error('out/extension.js is missing; run `npm run compile` before `npm run package-bundle`.');
     }
 
-    let runtimeSource = fs.readFileSync(extensionPath, 'utf8');
-    const buildConstants = [
-        `const __N8NAC_VERSION__ = ${JSON.stringify(n8nacVersion)};`,
-        `const __N8NAC_CLI_SEMVER__ = ${JSON.stringify(n8nacCliSemver)};`,
-    ].join('\n');
-    runtimeSource = runtimeSource.replace(
-        /^"use strict";\n/,
-        `"use strict";\n${buildConstants}\n`
-    );
-    runtimeSource = runtimeSource.replace('//# sourceMappingURL=extension.js.map', '//# sourceMappingURL=extension-runtime.js.map');
-    fs.writeFileSync(runtimePath, runtimeSource);
+    fs.rmSync(runtimePath, { force: true });
+    fs.rmSync(runtimeMapPath, { force: true });
+    fs.rmSync(staleCommonJsRuntimePath, { force: true });
+    fs.rmSync(staleCommonJsRuntimeMapPath, { force: true });
 
-    if (fs.existsSync(extensionMapPath)) {
-        fs.renameSync(extensionMapPath, runtimeMapPath);
-    }
+    esbuild.buildSync({
+        entryPoints: ['./src/extension.ts'],
+        bundle: true,
+        outfile: runtimePath,
+        format: 'esm',
+        platform: 'node',
+        target: ['node18'],
+        packages: 'external',
+        sourcemap: true,
+        define: {
+            __N8NAC_VERSION__: JSON.stringify(n8nacVersion),
+            __N8NAC_CLI_SEMVER__: JSON.stringify(n8nacCliSemver),
+        },
+    });
+    fs.rmSync(extensionMapPath, { force: true });
 
     fs.writeFileSync(extensionPath, `'use strict';
 Object.defineProperty(exports, '__esModule', { value: true });
@@ -276,26 +299,30 @@ const path = require('node:path');
 process.env.N8N_AS_CODE_ASSETS_DIR ??= path.join(__dirname, '..', 'assets');
 let runtime;
 function loadRuntime() {
-  runtime ??= require('./extension-runtime.js');
+  runtime ??= import('./extension-runtime.mjs');
   return runtime;
 }
 async function activate(context) {
   try {
-    return await loadRuntime().activate(context);
+    return await (await loadRuntime()).activate(context);
   } catch (error) {
     const vscode = require('vscode');
     const message = error && (error.stack || error.message) || String(error);
     const outputChannel = vscode.window.createOutputChannel('n8n-as-code');
     outputChannel.appendLine('[n8n] Failed to load extension runtime: ' + message);
-    context.subscriptions.push(vscode.commands.registerCommand('n8n.configure', async () => {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'n8n');
-      vscode.window.showErrorMessage('n8n as code could not load its full runtime. See the n8n-as-code output channel for details.');
-    }));
+    try {
+      context.subscriptions.push(vscode.commands.registerCommand('n8n.configure', async () => {
+        outputChannel.show(true);
+        vscode.window.showErrorMessage('n8n as code could not load its full runtime. See the n8n-as-code output channel for details.');
+      }));
+    } catch (registrationError) {
+      outputChannel.appendLine('[n8n] Failed to register fallback configure command: ' + ((registrationError && (registrationError.stack || registrationError.message)) || String(registrationError)));
+    }
     vscode.window.showErrorMessage('n8n as code could not load its full runtime. See the n8n-as-code output channel for details.');
   }
 }
 function deactivate() {
-  return runtime && typeof runtime.deactivate === 'function' ? runtime.deactivate() : undefined;
+  return runtime ? Promise.resolve(runtime).then((loadedRuntime) => typeof loadedRuntime.deactivate === 'function' ? loadedRuntime.deactivate() : undefined) : undefined;
 }
 //# sourceMappingURL=extension.js.map
 `);
@@ -307,7 +334,7 @@ function deactivate() {
         mappings: '',
     }));
 
-    console.log('✅ Split VS Code extension entrypoint into out/extension.js and out/extension-runtime.js');
+    console.log('✅ Split VS Code extension entrypoint into out/extension.js and out/extension-runtime.mjs');
 }
 
 const localOpenBridgeBuild = esbuild.build({
@@ -334,4 +361,7 @@ Promise.all([localOpenBridgeBuild, settingsWebviewBuild])
         copyRuntimeDependencies();
         writeSplitExtensionEntrypoint();
     })
-    .catch(() => process.exit(1));
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });

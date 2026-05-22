@@ -51,6 +51,7 @@ export function getConfigurationHtml(nonce: string, scriptUri: string): string {
     .badge.active { color: var(--vscode-button-foreground); background: var(--accent); border-color: var(--accent); }
     label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
     input, select, textarea { width: 100%; min-height: 36px; padding: 8px 10px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 6px; }
+    select option, select optgroup { color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
     input[type="checkbox"] { width: 14px; height: 14px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent); }
     label.row { display: flex; width: fit-content; align-items: center; gap: 8px; }
     textarea { min-height: 76px; resize: vertical; }

@@ -4,6 +4,8 @@ import { IWorkflowStatus } from 'n8nac';
 import { AgentRuntimeController, type AgentWorkbenchMessage, type AgentWorkflowContext } from '../services/agent-runtime-controller.js';
 import { workflowWebviewRegistry } from '../services/workflow-webview-registry.js';
 import { buildAgentWorkbenchHtml } from './agent-workbench-html.js';
+import { readAgentProviderSettings } from '../services/agent-provider-settings.js';
+import { getReasoningOptions } from '../services/agent-provider-capabilities.js';
 import type { WorktreeInfo } from '../services/worktree-service.js';
 
 interface AgentWorkbenchNodeContext {
@@ -584,15 +586,14 @@ export class AgentWorkbenchWebview {
     }
 
     private getProviderModelLabel(): string {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const provider = this.readSelectedProvider();
-        const model = String(config.get<string>('model') || '').trim();
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const provider = settings.provider;
+        const model = settings.model || '';
         return model ? `${provider} / ${model}` : provider;
     }
 
     private readSelectedProvider(): string {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        return String(config.get<string>('provider') || 'openai').trim() || 'openai';
+        return readAgentProviderSettings(this._context.globalState).provider;
     }
 
     private buildWorkbenchInput(): {
@@ -679,11 +680,7 @@ export class AgentWorkbenchWebview {
             availableNodes: await this.getWorkflowNodeOptions(),
             providerOptions: await this._workflowProviders.listProviderOptions().catch(() => []),
             modelOptions: await this._workflowProviders.listModelOptions(String(nextState.provider || '')).catch(() => []),
-            reasoningOptions: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].map((effort) => ({
-                id: effort,
-                label: effort,
-                selected: effort === nextState.reasoningEffort,
-            })),
+            reasoningOptions: getReasoningOptions(String(nextState.provider || ''), nextState.model, nextState.reasoningEffort),
             activeWorktree,
             availableWorktrees,
         };

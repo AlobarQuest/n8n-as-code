@@ -118,7 +118,7 @@ test('Agent Workbench HTML: final stream event releases composer while runtime c
     assert.ok(html.includes('setRunning(false);'), 'Must unlock the composer as soon as the final response arrives');
     assert.ok(html.includes('if (isRunning || runtimeFinalizing)'), 'Must queue immediate follow-up prompts while the native runtime context finalizes');
     assert.ok(html.includes("if (message.status === 'idle') runtimeFinalizing = false;"), 'Must clear runtime finalization once the host posts idle');
-    assert.ok(html.includes('return isRunning || runtimeFinalizing || hasLiveEntry;'), 'Must reject stale runtime states that would remove the visible final answer while DeepAgents finalizes');
+    assert.ok(html.includes('return hasLiveEntry && (isRunning || runtimeFinalizing);'), 'Must reject stale runtime states that would remove the visible final answer while DeepAgents finalizes');
 });
 
 test('Agent Workbench HTML: stop releases inline message actions immediately', () => {
@@ -154,19 +154,19 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     assert.ok(source.includes('consumeDeepAgentV3Run(run, input, entries, sessions.service, postMessage, signal, contextWindowTokens)'), 'Must consume the native v3 run stream directly');
     assert.ok(source.includes('Promise.resolve(run.output)'), 'Must use native run.output for authoritative completion');
     assert.ok(source.includes('consumeDeepAgentV3MessageProjection'), 'Must adapt native v3 message projections for UI streaming');
-    assert.ok(source.includes('consumeDeepAgentV3ToolCallProjection'), 'Must adapt native v3 tool-call projections for UI operations');
+    assert.ok(source.includes('consumeDeepAgentV3ProtocolProjection'), 'Must adapt native v3 protocol tool events for UI operations');
     assert.ok(source.includes('run.messages'), 'Must read the native run.messages projection');
-    assert.ok(source.includes('run.toolCalls'), 'Must read the native run.toolCalls projection');
+    assert.ok(source.includes('protocolEvent.method'), 'Must read the native v3 protocol stream directly');
     assert.ok(source.includes('message.text'), 'Must read the native message.text projection');
     assert.ok(source.includes('message.reasoning'), 'Must read the native message.reasoning projection');
     assert.ok(source.includes('message.usage'), 'Must read the native message.usage projection');
     assert.ok(source.includes("eventName === 'content-block-finish'"), 'Must use native message lifecycle events to detect visible text completion');
     assert.ok(source.includes('extractContentBlockText(content)'), 'Must finalize visible answers from the completed text block');
-    assert.ok(source.includes('onFinalCandidate'), 'Must emit a visible final response from native message projections');
-    assert.ok(source.includes('runtimeFinalizing'), 'Must distinguish visible completion from authoritative run.output completion');
-    assert.ok(source.includes('deepagents.v3.visible-final'), 'Must log when the visible answer is complete');
+    assert.ok(source.includes("protocolEvent.method !== 'tools'"), 'Must read v3 tools protocol events directly');
+    assert.ok(!source.includes('onFinalCandidate'), 'Message projections must not finalize the UI before run.output resolves');
+    assert.ok(!source.includes('deepagents.v3.visible-final'), 'Must not emit visible-final before the authoritative run output');
     assert.ok(source.includes('deepagents.v3.run.output resolved'), 'Must log when the authoritative run output resolves');
-    assert.ok(source.includes('visibleDone'), 'Must let follow-up prompts queue once the visible answer is complete');
+    assert.ok(source.includes('deepagents.v3.authoritative-final'), 'Must finalize only from authoritative run output');
 
     const forbiddenLegacyStreamMarkers = [
         "version: 'v2'",
@@ -189,6 +189,38 @@ test('Agent runtime: workbench uses the native DeepAgents v3 run stream', () => 
     for (const marker of forbiddenLegacyStreamMarkers) {
         assert.ok(!source.includes(marker), `Workbench runtime must not contain legacy DeepAgents stream marker: ${marker}`);
     }
+});
+
+test('Agent runtime: v3 tools protocol drives operation cards', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes("eventName === 'tool-started'"), 'Tool start protocol events must create running operation cards');
+    assert.ok(source.includes("eventName === 'tool-output-delta'"), 'Tool output deltas must update operation details while running');
+    assert.ok(source.includes("eventName === 'tool-finished' || eventName === 'tool-error'"), 'Tool terminal protocol events must close operation cards');
+    assert.ok(source.includes('createToolOperationEvent'), 'Tool protocol events must map through one operation-card builder');
+    assert.ok(source.includes('emitCompactionFromToolOutput'), 'Tool protocol output must preserve compaction detection');
+});
+
+test('Agent runtime: v3 tool message projections are not duplicated as assistant text', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes('isToolMessageProjection(message)'), 'Message projection consumption must filter tool-originated streams');
+    assert.ok(source.includes("if (this.isToolMessageProjection(message)) continue;"), 'Tool-originated message streams must be skipped before text deltas are emitted');
+    assert.ok(source.includes("normalized.startsWith('tools:')"), 'Tool namespace segments must be recognized');
+});
+
+test('Agent runtime: provider raw tool calls are preserved for Gemini 3 tool loops', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes('extractRawProviderToolCalls'), 'Runtime must preserve provider raw tool calls');
+    assert.ok(source.includes('extra_content'), 'Runtime must preserve provider-specific tool-call metadata such as Gemini thought signatures');
+    assert.ok(source.includes('tool_calls: rawToolCalls'), 'Raw provider tool calls must be sent back through additional_kwargs.tool_calls');
 });
 
 test('Agent runtime: Codex v3 output adapter reads provider output items', () => {
@@ -295,6 +327,8 @@ test('CLI skills assets: extension bundles only runtime-required agent assets', 
     assert.ok(extensionBuildSource.includes("fs.rmSync(path.join(targetDir, file), { force: true })"), 'Extension bundler must prune legacy generated JSON assets');
     assert.ok(extensionBuildSource.includes('agent skills not found — AiContextGenerator will be unable to '), 'Extension bundler must fail when canonical agent skills are missing');
     assert.ok(!extensionBuildSource.includes(".split(path.sep).includes('node_modules')"), 'Extension bundler must preserve nested dependency installs such as deepagents/node_modules/zod@4');
+    assert.ok(extensionBuildSource.includes('getPackageDir(dependencyName, realPackageDir)'), 'Extension bundler must resolve transitive dependencies from the parent package directory');
+    assert.ok(extensionBuildSource.includes('seenPackageDirs'), 'Extension bundler must track dependency closure by resolved package path, not only by package name');
     assert.ok(!extensionBuildSource.includes('⚠️  agent skills not found'), 'Extension bundler must not silently continue without canonical agent skills');
     assert.ok(!extensionBuildSource.includes('hasRequiredSkillsAssets'), 'Extension bundler must not require generated skills JSON assets');
     assert.ok(!extensionBuildSource.includes('skills assets not found; run `npm run build:extension`'), 'Extension bundler must not fail on missing generated skills JSON assets');
@@ -397,6 +431,25 @@ test('Agent Workbench HTML: stale state cannot undo a local rewind', () => {
     assert.ok(html.includes('if (incomingStateContainsRewoundMessage(message.state)) return false;'), 'Must ignore late states that contain rewound messages');
     assert.ok(html.includes('if (incomingStateDropsLiveEntries(message.state)) return false;'), 'Must ignore stale states that would erase live streamed content');
     assert.ok(html.includes('if (sequence && sequence < lastStateSequence) return false;'), 'Must ignore out-of-order state updates');
+});
+
+test('Agent Workbench HTML: final idle state can replace transient live entries', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(
+        html.includes('return hasLiveEntry && (isRunning || runtimeFinalizing);'),
+        'Final enriched state must not be rejected after the run is idle just because a transient stream entry was live',
+    );
+    assert.ok(
+        !html.includes('return isRunning || runtimeFinalizing || hasLiveEntry;'),
+        'Live-entry protection must not block authoritative idle states',
+    );
 });
 
 test('Agent Workbench HTML: assistant responses expose a copy action dock', () => {

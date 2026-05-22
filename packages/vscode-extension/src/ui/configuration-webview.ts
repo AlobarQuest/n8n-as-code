@@ -137,7 +137,7 @@ export class ConfigurationWebview {
       ConfigurationWebview.currentPanel = undefined;
     });
 
-    this._panel.webview.options = { enableScripts: true };
+    this._panel.webview.options = this.getWebviewOptions();
     this._panel.webview.onDidReceiveMessage((message) => {
       void this.handleMessage(message);
     });
@@ -174,7 +174,7 @@ export class ConfigurationWebview {
       'n8nConfiguration',
       'n8n: Configure',
       column,
-      { enableScripts: true },
+      ConfigurationWebview.getWebviewOptions(context),
     );
 
     ConfigurationWebview.currentPanel = new ConfigurationWebview(panel, context, configurationController, initialTab);
@@ -964,5 +964,16 @@ export class ConfigurationWebview {
   private getHtmlForWebview(): string {
     const scriptUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'out', 'settings-webview.js'));
     return getConfigurationHtml(getNonce(), scriptUri.toString());
+  }
+
+  private getWebviewOptions(): vscode.WebviewOptions {
+    return ConfigurationWebview.getWebviewOptions(this._context);
+  }
+
+  private static getWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions {
+    return {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out')],
+    };
   }
 }

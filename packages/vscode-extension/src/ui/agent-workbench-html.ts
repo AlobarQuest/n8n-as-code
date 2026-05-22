@@ -2605,7 +2605,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const hasLiveEntry = currentEntries.some((entry) =>
                 entry && ((entry.kind === 'assistant-body' && entry.streaming) || (entry.kind === 'operation' && entry.status === 'running'))
             );
-            return isRunning || runtimeFinalizing || hasLiveEntry;
+            return hasLiveEntry && (isRunning || runtimeFinalizing);
         }
 
         function acceptIncomingStateMessage(message) {

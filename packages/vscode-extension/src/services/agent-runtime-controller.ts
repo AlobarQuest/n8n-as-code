@@ -4,6 +4,8 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { WorkspaceSnapshotService } from './workspace-snapshot-service.js';
 import { createLocalProviderLangChainModel } from './agent-provider-runtime/create-langchain-model.js';
+import { readAgentProviderSettings } from './agent-provider-settings.js';
+import { buildLangChainReasoningOptions, getReasoningCapability, getReasoningOptions, normalizeReasoningEffortForCapability, shouldDisableModelStreamingForToolCalling, type AgentReasoningEffort as AgentProviderReasoningEffort } from './agent-provider-capabilities.js';
 import type { WorktreeInfo } from './worktree-service.js';
 
 export interface AgentPromptInput {
@@ -41,7 +43,7 @@ export interface AgentWorkflowContext {
     filePath?: string;
 }
 
-export type AgentReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type AgentReasoningEffort = AgentProviderReasoningEffort;
 
 export interface AgentContextUsage {
     promptTokens: number;
@@ -810,6 +812,7 @@ export class AgentRuntimeController implements vscode.Disposable {
         const workflowContext = session.workflowContext;
         const nodeContexts = session.nodeContexts.length ? session.nodeContexts : this.normalizeNodeContexts(input.nodeContexts || input.nodeContext);
         const providerConfig = await this.describeProviderRuntimeConfig();
+        const reasoningCapability = getReasoningCapability(providerConfig.provider, providerConfig.model);
         return {
             workflow: {
                 id: workflowContext?.id,
@@ -821,7 +824,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             model: providerConfig.model,
             baseUrl: providerConfig.baseUrl,
             reasoningEffort: providerConfig.reasoningEffort,
-            supportsReasoningEffort: providerConfig.provider === 'openai-oauth',
+            supportsReasoningEffort: reasoningCapability.supported,
             currentNodeContext: nodeContexts[0],
             currentNodeContexts: nodeContexts,
             activeSessionId: activeRecord.id,
@@ -1457,10 +1460,11 @@ export class AgentRuntimeController implements vscode.Disposable {
         return { entries, workflowChanged: false };
     }
 
-    private isDeepAgentV3Run(value: unknown): value is { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> } {
+    private isDeepAgentV3Run(value: unknown): value is AsyncIterable<any> & { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> } {
         return Boolean(value
             && typeof value === 'object'
-            && 'output' in Object(value));
+            && 'output' in Object(value)
+            && Symbol.asyncIterator in Object(value));
     }
 
     private isAsyncIterable(value: unknown): value is AsyncIterable<any> {
@@ -1470,7 +1474,7 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async consumeDeepAgentV3Run(
-        run: { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> },
+        run: AsyncIterable<any> & { output: Promise<unknown>; interrupted?: boolean; messages?: AsyncIterable<any>; toolCalls?: AsyncIterable<any> },
         input: AgentPromptInput,
         initialEntries: AgentTimelineEntry[],
         service: SessionServiceHandle,
@@ -1483,7 +1487,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         let entries = [...initialEntries];
         let fileModificationDetected = false;
         const writtenWorkflowPaths = new Set<string>();
-        let visibleFinalEmitted = false;
         let authoritativeFinalEmitted = false;
         const loggedProjectionEvents = new Set<string>();
         this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.run started sessionId=${input.sessionId || 'none'} workflowId=${input.workflowId || 'none'}`);
@@ -1503,32 +1506,21 @@ export class AgentRuntimeController implements vscode.Disposable {
                 }
             }
         };
-        const emitFinalEvent = async (response: string, finalState: string, runtimeFinalizing: boolean) => {
-            if (runtimeFinalizing) {
-                if (visibleFinalEmitted) return;
-                visibleFinalEmitted = true;
-            } else {
-                if (authoritativeFinalEmitted) return;
-                authoritativeFinalEmitted = true;
-                visibleFinalEmitted = true;
-            }
+        const emitFinalEvent = async (response: string, finalState: string) => {
+            if (authoritativeFinalEmitted) return;
+            authoritativeFinalEmitted = true;
             const activeRun = input.sessionId ? this.activeRuns.get(input.sessionId) : undefined;
             if (activeRun && activeRun.sessionId === input.sessionId) {
                 activeRun.visibleDone = true;
-                if (runtimeFinalizing) {
-                    activeRun.visibleFinalAt = Date.now();
-                }
             }
             const elapsedMs = Date.now() - runStartedAt;
-            const waitAfterVisibleMs = !runtimeFinalizing && activeRun?.visibleFinalAt ? Date.now() - activeRun.visibleFinalAt : undefined;
-            const finalLogKind = runtimeFinalizing ? 'deepagents.v3.visible-final' : 'deepagents.v3.authoritative-final';
-            this.outputChannel.appendLine(`[n8n-agent-debug] ${finalLogKind} sessionId=${input.sessionId || 'none'} elapsedMs=${elapsedMs} waitAfterVisibleMs=${waitAfterVisibleMs ?? 'n/a'} responseChars=${response.length} finalState=${finalState}`);
+            this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.authoritative-final sessionId=${input.sessionId || 'none'} elapsedMs=${elapsedMs} responseChars=${response.length} finalState=${finalState}`);
             const finalEvent: AgentStreamEvent = {
                 type: 'final',
                 sessionId: input.sessionId || '',
                 response,
                 finalState,
-                runtimeFinalizing,
+                runtimeFinalizing: false,
             };
             entries = this.applyStreamEvent(entries, finalEvent);
             syncEntries();
@@ -1540,14 +1532,13 @@ export class AgentRuntimeController implements vscode.Disposable {
                 signal,
                 contextWindowTokens,
                 onStreamEvent: emitStreamEvent,
-                onFinalCandidate: async (response) => emitFinalEvent(response, 'done', true),
                 onProjectionEvent: (eventName, detail) => {
                     if (loggedProjectionEvents.has(eventName)) return;
                     loggedProjectionEvents.add(eventName);
                     this.outputChannel.appendLine(`[n8n-agent-debug] deepagents.v3.message-event sessionId=${input.sessionId || 'none'} event=${eventName} elapsedMs=${Date.now() - runStartedAt}${detail ? ` ${detail}` : ''}`);
                 },
             }),
-            this.consumeDeepAgentV3ToolCallProjection(run, {
+            this.consumeDeepAgentV3ProtocolProjection(run, {
                 signal,
                 onStreamEvent: emitStreamEvent,
             }),
@@ -1583,7 +1574,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         await emitFinalEvent(
             this.extractAssistantTextFromAgentOutput(finalOutput) || accumulator.responseText || this.extractAgentText(finalOutput),
             run.interrupted ? 'interrupted' : 'done',
-            false,
         );
         if (fileModificationDetected) {
             this.saveAutoCheckpointAfterFileModificationInBackground(service, input, entries);
@@ -1602,15 +1592,26 @@ export class AgentRuntimeController implements vscode.Disposable {
             signal: AbortSignal;
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
-            onFinalCandidate: (response: string) => Promise<void>;
             onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
         if (!this.isAsyncIterable(run.messages)) return;
         for await (const message of run.messages) {
             await this.throwIfAborted(callbacks.signal);
+            if (this.isToolMessageProjection(message)) continue;
             await this.consumeDeepAgentV3Message(message, accumulator, callbacks);
         }
+    }
+
+    private isToolMessageProjection(message: unknown): boolean {
+        if (!this.isRecord(message)) return false;
+        const node = String(message.node || '').toLowerCase();
+        if (node === 'tools' || node.endsWith(':tools') || node.endsWith('/tools')) return true;
+        const namespace = Array.isArray(message.namespace) ? message.namespace.map(String) : [];
+        return namespace.some((part) => {
+            const normalized = part.toLowerCase();
+            return normalized === 'tools' || normalized.startsWith('tools:') || normalized.endsWith(':tools');
+        });
     }
 
     private async consumeDeepAgentV3Message(
@@ -1620,7 +1621,6 @@ export class AgentRuntimeController implements vscode.Disposable {
             signal: AbortSignal;
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
-            onFinalCandidate: (response: string) => Promise<void>;
             onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
@@ -1651,9 +1651,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             accumulator.thinkingOperationId = undefined;
         }
         const finalText = this.extractMessageTextFromOutput(output) || messageText;
-        if (finalText.trim() && !this.messageHasToolCalls(output)) {
-            await callbacks.onFinalCandidate(this.sanitizeAssistantText(finalText));
-        }
+        if (finalText.trim() && !this.messageHasToolCalls(output)) this.sanitizeAssistantText(finalText);
     }
 
     private async consumeDeepAgentV3MessageEvents(
@@ -1663,7 +1661,6 @@ export class AgentRuntimeController implements vscode.Disposable {
             signal: AbortSignal;
             contextWindowTokens: number;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
-            onFinalCandidate: (response: string) => Promise<void>;
             onProjectionEvent?: (eventName: string, detail?: string) => void;
         },
     ): Promise<void> {
@@ -1673,7 +1670,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         const blockText = new Map<number, string>();
         let messageText = '';
         let hasToolCall = false;
-        let visibleFinalEmitted = false;
         let textVisibilityResolved = false;
         let pendingVisibleText = '';
         let isInternalRecoveryMessage = false;
@@ -1739,15 +1735,6 @@ export class AgentRuntimeController implements vscode.Disposable {
                 startedAt: Date.now(),
             });
         };
-        const emitVisibleFinal = async () => {
-            if (isInternalRecoveryMessage) return;
-            const finalText = this.sanitizeAssistantText(messageText);
-            if (visibleFinalEmitted || hasToolCall || !finalText) return;
-            visibleFinalEmitted = true;
-            await emitThinkingDone();
-            await callbacks.onFinalCandidate(finalText);
-        };
-
         for await (const event of message) {
             await this.throwIfAborted(callbacks.signal);
             if (!this.isRecord(event)) continue;
@@ -1794,7 +1781,6 @@ export class AgentRuntimeController implements vscode.Disposable {
                         ? finalBlockText.slice(currentBlockText.length)
                         : currentBlockText ? '' : finalBlockText;
                     await emitTextDelta(missingText, index);
-                    await emitVisibleFinal();
                 }
                 if (this.extractContentBlockReasoning(content)) {
                     await emitThinkingDone();
@@ -1804,7 +1790,6 @@ export class AgentRuntimeController implements vscode.Disposable {
             if (eventName === 'message-finish') {
                 const usageEvent = this.contextUsageEventFromUsage(event.usage, callbacks.contextWindowTokens);
                 if (usageEvent) await callbacks.onStreamEvent(usageEvent);
-                await emitVisibleFinal();
                 await emitThinkingDone();
                 continue;
             }
@@ -1813,7 +1798,6 @@ export class AgentRuntimeController implements vscode.Disposable {
             }
         }
 
-        await emitVisibleFinal();
         await emitThinkingDone();
     }
 
@@ -1927,94 +1911,94 @@ export class AgentRuntimeController implements vscode.Disposable {
         }
     }
 
-    private async consumeDeepAgentV3ToolCallProjection(
-        run: { toolCalls?: AsyncIterable<any> },
+    private async consumeDeepAgentV3ProtocolProjection(
+        run: AsyncIterable<any>,
         callbacks: {
             signal: AbortSignal;
             onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
         },
     ): Promise<void> {
-        if (!this.isAsyncIterable(run.toolCalls)) return;
-        const completions: Promise<void>[] = [];
-        for await (const toolCall of run.toolCalls) {
+        const activeTools = new Map<string, { name: string; input: unknown; startedAt: number; output: string }>();
+        for await (const protocolEvent of run) {
             await this.throwIfAborted(callbacks.signal);
-            const completion = this.consumeDeepAgentV3ToolCall(toolCall, callbacks).catch((error: any) => {
-                if (!callbacks.signal.aborted) {
-                    this.outputChannel.appendLine(`[n8n-agent] DeepAgents v3 tool-call projection failed: ${error?.message || String(error)}`);
-                }
-            });
-            completions.push(completion);
+            if (!this.isRecord(protocolEvent) || protocolEvent.method !== 'tools') continue;
+            const data = this.isRecord(protocolEvent.params) ? protocolEvent.params.data : undefined;
+            if (!this.isRecord(data)) continue;
+            const eventName = String(data.event || '');
+            const toolCallId = String(data.tool_call_id || data.toolCallId || randomUUID());
+            const toolName = String(data.tool_name || data.name || activeTools.get(toolCallId)?.name || 'tool');
+            if (!this.shouldShowToolOperation(toolName)) continue;
+            const operationId = `${toolName}:${toolCallId}`;
+            const existing = activeTools.get(toolCallId);
+            const startedAt = existing?.startedAt || Date.now();
+            const category = this.categorizeTool(toolName);
+
+            if (eventName === 'tool-started') {
+                activeTools.set(toolCallId, { name: toolName, input: data.input, startedAt, output: '' });
+                await callbacks.onStreamEvent(this.createToolOperationEvent(operationId, toolName, category, 'running', data.input, undefined, startedAt));
+                continue;
+            }
+            if (eventName === 'tool-output-delta') {
+                const current = existing || { name: toolName, input: undefined, startedAt, output: '' };
+                current.output += String(data.delta || '');
+                activeTools.set(toolCallId, current);
+                await callbacks.onStreamEvent(this.createToolOperationEvent(operationId, toolName, category, 'running', current.input, current.output, current.startedAt));
+                continue;
+            }
+            if (eventName === 'tool-finished' || eventName === 'tool-error') {
+                const current = existing || { name: toolName, input: undefined, startedAt, output: '' };
+                activeTools.delete(toolCallId);
+                const output = eventName === 'tool-error' ? String(data.message || 'Tool failed') : data.output ?? current.output;
+                await callbacks.onStreamEvent(this.createToolOperationEvent(operationId, toolName, category, eventName === 'tool-error' ? 'error' : 'done', current.input, output, current.startedAt, Date.now()));
+                await this.emitCompactionFromToolOutput(output, callbacks);
+            }
         }
-        await Promise.allSettled(completions);
     }
 
-    private async consumeDeepAgentV3ToolCall(
-        toolCall: any,
-        callbacks: {
-            signal: AbortSignal;
-            onStreamEvent: (event: AgentStreamEvent) => Promise<void>;
-        },
-    ): Promise<void> {
-        const toolName = String(toolCall?.name || 'tool');
-        if (!this.shouldShowToolOperation(toolName)) return;
-        const toolCallId = String(toolCall?.callId || randomUUID());
-        const operationId = `${toolName}:${toolCallId}`;
-        const startedAt = Date.now();
-        const category = this.categorizeTool(toolName);
-        const command = category === 'shell' ? this.extractCommandFromToolPayload(toolCall?.input) : undefined;
-        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(toolCall?.input) : undefined;
-        const todoSummary = category === 'todo' ? this.extractTodoSummary(toolCall?.input) : undefined;
-        await callbacks.onStreamEvent({
+    private createToolOperationEvent(
+        operationId: string,
+        toolName: string,
+        category: string,
+        status: 'running' | 'done' | 'error',
+        input: unknown,
+        output: unknown,
+        startedAt: number,
+        endedAt?: number,
+    ): AgentStreamEvent {
+        const command = category === 'shell' ? this.extractCommandFromToolPayload(input) : undefined;
+        const filePath = category === 'file-read' || category === 'file-write' ? this.extractFilePathFromToolPayload(input) : undefined;
+        const todoSummary = category === 'todo' ? this.extractTodoSummary(input) : undefined;
+        const outputText = output === undefined ? undefined : this.stringifyToolOutput(output);
+        return {
             type: 'operation',
             operationId,
             label: this.formatToolLabel(toolName),
             category,
-            status: 'running',
-            body: category === 'todo' ? this.stringifyToolPayload(toolCall?.input) : command ? `$ ${command}` : this.stringifyToolPayload(toolCall?.input),
-            summary: command ? `$ ${command}` : filePath || todoSummary,
+            status,
+            body: status === 'running'
+                ? outputText || (category === 'todo' ? this.stringifyToolPayload(input) : command ? `$ ${command}` : this.stringifyToolPayload(input))
+                : outputText,
+            summary: status === 'running'
+                ? command ? `$ ${command}` : filePath || todoSummary
+                : this.truncateOperationDetail(outputText),
             startedAt,
-        });
+            endedAt,
+        };
+    }
 
-        let status = await Promise.resolve(toolCall?.status).catch(() => 'error');
-        let output: unknown;
-        let errorMessage: string | undefined;
-        if (status === 'error') {
-            errorMessage = await Promise.resolve(toolCall?.error).catch((error: any) => error?.message || String(error));
-            output = errorMessage || 'Tool failed';
-        } else {
-            output = await Promise.resolve(toolCall?.output).catch((error: any) => {
-                status = 'error';
-                errorMessage = error?.message || String(error);
-                return errorMessage;
-            });
-        }
-
-        await this.throwIfAborted(callbacks.signal);
-        const outputText = status === 'error' ? String(errorMessage || output || 'Tool failed') : this.stringifyToolOutput(output);
-        await callbacks.onStreamEvent({
-            type: 'operation',
-            operationId,
-            label: this.formatToolLabel(toolName),
-            category,
-            status: status === 'error' ? 'error' : 'done',
-            summary: this.truncateOperationDetail(outputText),
-            body: outputText,
-            startedAt,
-            endedAt: Date.now(),
-        });
+    private async emitCompactionFromToolOutput(output: unknown, callbacks: { onStreamEvent: (event: AgentStreamEvent) => Promise<void> }): Promise<void> {
         const compaction = this.extractCompactionSummary(output);
-        if (compaction) {
-            await callbacks.onStreamEvent({
-                type: 'compaction',
-                summary: compaction.summary,
-                source: compaction.source,
-                messagesCompacted: compaction.messagesCompacted,
-                preservedRecentMessages: compaction.preservedRecentMessages,
-                estimatedTokens: compaction.estimatedTokens,
-                thresholdTokens: compaction.thresholdTokens,
-                fallbackReason: compaction.fallbackReason,
-            });
-        }
+        if (!compaction) return;
+        await callbacks.onStreamEvent({
+            type: 'compaction',
+            summary: compaction.summary,
+            source: compaction.source,
+            messagesCompacted: compaction.messagesCompacted,
+            preservedRecentMessages: compaction.preservedRecentMessages,
+            estimatedTokens: compaction.estimatedTokens,
+            thresholdTokens: compaction.thresholdTokens,
+            fallbackReason: compaction.fallbackReason,
+        });
     }
 
     private contextUsageEventFromUsage(usage: any, contextWindowTokens: number): AgentContextUsageEvent | undefined {
@@ -2074,14 +2058,15 @@ export class AgentRuntimeController implements vscode.Disposable {
 
     private async describeProviderRuntimeConfig(): Promise<ProviderRuntimeConfig> {
         const providerRegistry = await this.loadAgentProviderRegistry().catch(() => undefined);
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const reasoningEffort = normalizeReasoningEffortForCapability(settings.reasoningEffort, getReasoningCapability(settings.provider, settings.model));
         if (!providerRegistry) {
-            const config = vscode.workspace.getConfiguration('n8n.agent');
             return {
                 ready: false,
-                provider: String(config.get<string>('provider') || 'openai'),
-                model: String(config.get<string>('model') || '').trim() || undefined,
-                baseUrl: String(config.get<string>('baseUrl') || '').trim() || undefined,
-                reasoningEffort: this.readReasoningEffort(),
+                provider: settings.provider,
+                model: settings.model,
+                baseUrl: settings.baseUrl,
+                reasoningEffort,
                 temperature: 0,
             };
         }
@@ -2089,23 +2074,23 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async getProviderRuntimeConfig(providerRegistry: AgentProviderRegistryModule): Promise<ProviderRuntimeConfig> {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const provider = String(config.get<string>('provider') || 'openai');
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const provider = settings.provider;
         const normalizedProvider = providerRegistry.normalizeProviderId(provider);
-        const reasoningEffort = this.readReasoningEffort();
+        const reasoningEffort = normalizeReasoningEffortForCapability(settings.reasoningEffort, getReasoningCapability(provider, settings.model));
         if (!normalizedProvider) {
             return {
                 ready: false,
                 reason: `Provider ${provider} is not supported by the embedded agent runtime.`,
                 provider,
-                model: String(config.get<string>('model') || '').trim() || undefined,
-                baseUrl: String(config.get<string>('baseUrl') || '').trim() || undefined,
+                model: settings.model,
+                baseUrl: settings.baseUrl,
                 reasoningEffort,
                 temperature: 0,
             };
         }
-        const model = String(config.get<string>('model') || '').trim() || undefined;
-        const baseUrl = String(config.get<string>('baseUrl') || '').trim() || undefined;
+        const model = settings.model;
+        const baseUrl = settings.baseUrl;
         const apiKey = await this._context.secrets.get(getAgentProviderSecretKey(normalizedProvider));
         if (normalizedProvider === 'openai-oauth' && !apiKey) {
             return {
@@ -2137,7 +2122,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             model,
             baseUrl,
             apiKey,
-            reasoningEffort: normalizedProvider === 'openai-oauth' ? reasoningEffort : undefined,
+            reasoningEffort: normalizeReasoningEffortForCapability(reasoningEffort, getReasoningCapability(normalizedProvider, model)),
             temperature: 0,
         };
     }
@@ -2176,6 +2161,7 @@ export class AgentRuntimeController implements vscode.Disposable {
             memory: memorySources,
             skills: skillSourcePaths,
             middleware: [
+                this.createProviderMessageCompatibilityMiddleware(langchain, messagesModule),
                 this.createInvalidToolCallRecoveryMiddleware(langchain, messagesModule),
             ].filter(Boolean),
             systemPrompt: this.buildStaticSystemPrompt(input.workspaceRoot),
@@ -2229,6 +2215,133 @@ export class AgentRuntimeController implements vscode.Disposable {
                 },
             },
         });
+    }
+
+    private createProviderMessageCompatibilityMiddleware(langchain: any, messagesModule: any): unknown {
+        const createMiddleware = langchain?.createMiddleware;
+        const AIMessage = messagesModule?.AIMessage;
+        const ToolMessage = messagesModule?.ToolMessage;
+        const HumanMessage = messagesModule?.HumanMessage;
+        const SystemMessage = messagesModule?.SystemMessage;
+        if (typeof createMiddleware !== 'function' || typeof AIMessage !== 'function' || typeof ToolMessage !== 'function') {
+            return undefined;
+        }
+        return createMiddleware({
+            name: 'N8nProviderMessageCompatibility',
+            wrapModelCall: async (request: any, handler: (request: any) => Promise<unknown>) => {
+                const messages = Array.isArray(request?.messages) ? request.messages : undefined;
+                if (!messages?.length) return handler(request);
+                return handler({
+                    ...request,
+                    messages: messages.map((message: any) => this.normalizeProviderMessage(message, { AIMessage, ToolMessage, HumanMessage, SystemMessage })),
+                });
+            },
+        });
+    }
+
+    private normalizeProviderMessage(message: any, classes: { AIMessage: any; ToolMessage: any; HumanMessage?: any; SystemMessage?: any }): any {
+        if (classes.AIMessage?.isInstance?.(message)) {
+            const rawToolCalls = this.extractRawProviderToolCalls(message);
+            const toolCalls = rawToolCalls.length ? [] : this.extractProviderToolCalls(message);
+            if (!toolCalls.length && !this.messageHasStandardOnlyContent(message)) return message;
+            return new classes.AIMessage({
+                id: message.id,
+                name: message.name,
+                content: this.extractProviderTextContent(message),
+                tool_calls: toolCalls,
+                additional_kwargs: rawToolCalls.length
+                    ? { ...this.omitProviderOutputVersion(message.additional_kwargs), tool_calls: rawToolCalls }
+                    : this.omitProviderToolCalls(message.additional_kwargs),
+                response_metadata: this.omitProviderOutputVersion(message.response_metadata),
+            });
+        }
+        if (classes.ToolMessage?.isInstance?.(message)) {
+            return new classes.ToolMessage({
+                id: message.id,
+                name: message.name,
+                content: this.extractProviderTextContent(message),
+                tool_call_id: message.tool_call_id,
+                additional_kwargs: message.additional_kwargs,
+                response_metadata: this.omitProviderOutputVersion(message.response_metadata),
+            });
+        }
+        if (classes.SystemMessage?.isInstance?.(message) || classes.HumanMessage?.isInstance?.(message)) {
+            if (!this.messageHasStandardOnlyContent(message)) return message;
+            const MessageClass = classes.SystemMessage?.isInstance?.(message) ? classes.SystemMessage : classes.HumanMessage;
+            return new MessageClass({
+                id: message.id,
+                name: message.name,
+                content: this.extractProviderTextContent(message),
+                additional_kwargs: message.additional_kwargs,
+                response_metadata: this.omitProviderOutputVersion(message.response_metadata),
+            });
+        }
+        return message;
+    }
+
+    private messageHasStandardOnlyContent(message: any): boolean {
+        const content = Array.isArray(message?.content) ? message.content : [];
+        return content.some((block: any) => block && typeof block === 'object' && typeof block.type === 'string' && block.type !== 'text' && block.type !== 'image_url');
+    }
+
+    private extractProviderToolCalls(message: any): Array<{ id?: string; name: string; args: unknown; type?: 'tool_call' }> {
+        const existing = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+        const fromBlocks = this.getProviderContentBlocks(message)
+            .filter((block: any) => block?.type === 'tool_call')
+            .map((block: any) => ({
+                id: typeof block.id === 'string' ? block.id : undefined,
+                name: typeof block.name === 'string' ? block.name : 'tool',
+                args: block.args ?? block.input ?? {},
+                type: 'tool_call' as const,
+            }));
+        const seen = new Set(existing.map((toolCall: any) => `${toolCall.id || ''}:${toolCall.name || ''}`));
+        return [
+            ...existing,
+            ...fromBlocks.filter((toolCall) => {
+                const key = `${toolCall.id || ''}:${toolCall.name || ''}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            }),
+        ];
+    }
+
+    private extractRawProviderToolCalls(message: any): any[] {
+        const rawToolCalls = message?.additional_kwargs?.tool_calls;
+        if (!Array.isArray(rawToolCalls)) return [];
+        return rawToolCalls.filter((toolCall) => this.isRecord(toolCall) && this.isRecord(toolCall.extra_content));
+    }
+
+    private extractProviderTextContent(message: any): string {
+        return this.getProviderContentBlocks(message)
+            .map((block: any) => {
+                if (typeof block === 'string') return block;
+                if (!block || typeof block !== 'object') return '';
+                if (typeof block.text === 'string') return block.text;
+                if (typeof block.content === 'string') return block.content;
+                return '';
+            })
+            .filter(Boolean)
+            .join('\n');
+    }
+
+    private getProviderContentBlocks(message: any): any[] {
+        if (Array.isArray(message?.contentBlocks)) return message.contentBlocks;
+        if (Array.isArray(message?.content)) return message.content;
+        if (typeof message?.content === 'string') return [{ type: 'text', text: message.content }];
+        return [];
+    }
+
+    private omitProviderToolCalls(value: any): any {
+        if (!value || typeof value !== 'object') return value;
+        const { tool_calls: _toolCalls, ...rest } = value;
+        return rest;
+    }
+
+    private omitProviderOutputVersion(value: any): any {
+        if (!value || typeof value !== 'object') return value;
+        const { output_version: _outputVersion, ...rest } = value;
+        return rest;
     }
 
     private countRecentInvalidToolCallRecoveryAttempts(messages: unknown[]): number {
@@ -2741,11 +2854,11 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async buildProviderStatusLine(): Promise<string> {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const provider = String(config.get<string>('provider') || 'openai');
-        const model = String(config.get<string>('model') || '').trim();
-        const baseUrl = String(config.get<string>('baseUrl') || '').trim();
-        const reasoningEffort = this.readReasoningEffort();
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const provider = settings.provider;
+        const model = settings.model || '';
+        const baseUrl = settings.baseUrl || '';
+        const reasoningEffort = settings.reasoningEffort;
         const storedSecret = await this._context.secrets.get(getAgentProviderSecretKey(provider));
         const hasEnvSecret = this.hasProviderEnvironmentSecret(provider);
         const secretState = storedSecret
@@ -3540,6 +3653,7 @@ export class AgentRuntimeController implements vscode.Disposable {
     private async createLangChainModel(providerConfig: ProviderRuntimeConfig): Promise<any> {
         const provider = providerConfig.provider;
         const model = providerConfig.model || this.getDefaultModelForProvider(provider);
+        const reasoningOptions = buildLangChainReasoningOptions(provider, model, providerConfig.reasoningEffort);
         if (provider === 'openai-oauth' || provider === 'copilot-proxy' || provider === 'minimax' || provider === 'minimax-token-plan') {
             return createLocalProviderLangChainModel({
                 provider,
@@ -3550,13 +3664,14 @@ export class AgentRuntimeController implements vscode.Disposable {
             });
         }
 
-        if (provider === 'google') {
-            const { ChatGoogleGenerativeAI } = await importRuntimeModule('@langchain/google-genai');
-            return new ChatGoogleGenerativeAI({ apiKey: providerConfig.apiKey, model });
-        }
         if (provider === 'anthropic') {
             const { ChatAnthropic } = await importRuntimeModule('@langchain/anthropic');
-            return new ChatAnthropic({ apiKey: providerConfig.apiKey, model });
+            return new ChatAnthropic({
+                apiKey: providerConfig.apiKey,
+                model,
+                ...(reasoningOptions.thinking ? { thinking: reasoningOptions.thinking } : {}),
+                ...(reasoningOptions.outputConfig ? { outputConfig: reasoningOptions.outputConfig } : {}),
+            });
         }
         if (provider === 'mistral') {
             const { ChatMistralAI } = await importRuntimeModule('@langchain/mistralai');
@@ -3565,10 +3680,17 @@ export class AgentRuntimeController implements vscode.Disposable {
         const { ChatOpenAI } = await importRuntimeModule('@langchain/openai');
         const baseURL = provider === 'openrouter'
             ? providerConfig.baseUrl || 'https://openrouter.ai/api/v1'
-            : providerConfig.baseUrl;
+            : provider === 'google'
+                ? providerConfig.baseUrl || 'https://generativelanguage.googleapis.com/v1beta/openai'
+                : providerConfig.baseUrl;
+        const modelKwargs = reasoningOptions.modelKwargs;
         return new ChatOpenAI({
             ...(providerConfig.apiKey ? { apiKey: providerConfig.apiKey } : {}),
             model,
+            ...(reasoningOptions.reasoning ? { reasoning: reasoningOptions.reasoning } : {}),
+            ...(reasoningOptions.useResponsesApi ? { useResponsesApi: true } : {}),
+            ...(modelKwargs ? { modelKwargs } : {}),
+            ...(shouldDisableModelStreamingForToolCalling(provider, model) ? { disableStreaming: true } : {}),
             ...(baseURL ? { configuration: { baseURL } } : {}),
         });
     }
@@ -4185,12 +4307,6 @@ export class AgentRuntimeController implements vscode.Disposable {
         void apiKey;
         void baseUrl;
         return DEFAULT_CONTEXT_WINDOW_TOKENS;
-    }
-
-    private readReasoningEffort(): AgentReasoningEffort | undefined {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const value = String(config.get<string>('reasoningEffort') || '').trim();
-        return value ? value as AgentReasoningEffort : undefined;
     }
 
     private isCompactionState(value: unknown): value is CompactionState {

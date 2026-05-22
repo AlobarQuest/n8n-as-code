@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getAgentProviderSecretKey } from '../services/agent-runtime-controller.js';
-import { AGENT_PROVIDER_DEFINITIONS, normalizeAgentProviderId, providerSupportsReasoningEffort } from '../services/agent-provider-service.js';
+import { AGENT_PROVIDER_DEFINITIONS, providerSupportsReasoningEffort } from '../services/agent-provider-service.js';
+import { readAgentProviderSettings } from '../services/agent-provider-settings.js';
 import { buildAgentManagerHtml } from './agent-manager-html.js';
 
 export class AgentManagerWebview {
@@ -48,16 +49,16 @@ export class AgentManagerWebview {
     }
 
     private async render(): Promise<void> {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const provider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const provider = settings.provider;
         const definition = AGENT_PROVIDER_DEFINITIONS[provider];
         this._panel.webview.html = buildAgentManagerHtml({
             provider,
             providerLabel: definition.label,
-            model: String(config.get<string>('model') || '').trim() || undefined,
-            baseUrl: String(config.get<string>('baseUrl') || '').trim() || undefined,
-            reasoningEffort: String(config.get<string>('reasoningEffort') || '').trim() || undefined,
-            supportsReasoningEffort: providerSupportsReasoningEffort(provider, String(config.get<string>('model') || '').trim() || undefined),
+            model: settings.model,
+            baseUrl: settings.baseUrl,
+            reasoningEffort: settings.reasoningEffort,
+            supportsReasoningEffort: providerSupportsReasoningEffort(provider, settings.model),
             hasStoredApiKey: Boolean(await this._context.secrets.get(getAgentProviderSecretKey(provider))),
             authKind: definition.authKind,
         });
@@ -84,7 +85,7 @@ export class AgentManagerWebview {
             return;
         }
         if (payload.type === 'openSettings') {
-            await vscode.commands.executeCommand('workbench.action.openSettings', 'n8n.agent');
+            await vscode.commands.executeCommand('n8n.configure', 'agent-providers');
         }
     }
 }

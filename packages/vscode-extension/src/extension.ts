@@ -33,6 +33,7 @@ import {
     type AgentModelProvider,
     type AgentProviderReasoningEffort,
 } from './services/agent-provider-service.js';
+import { readAgentProviderSettings, updateAgentProviderSettings } from './services/agent-provider-settings.js';
 import {
     N8nConfigurationController,
     type N8nConfigurationChangeEvent,
@@ -111,6 +112,7 @@ let failedAutoInitRuntimeSignature: string | undefined;
 let failedAutoInitConnectionKey: string | undefined;
 let aiContextFreshnessTimer: NodeJS.Timeout | undefined;
 let aiContextFreshnessInFlight: Promise<void> | undefined;
+let extensionContextForAgentSettings: vscode.ExtensionContext | undefined;
 
 const statusBar = new StatusBar();
 const proxyService = new ProxyService();
@@ -221,6 +223,7 @@ async function refreshWorkflowList(): Promise<IWorkflowStatus[]> {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+    extensionContextForAgentSettings = context;
     try {
         outputChannel.show(true);
         outputChannel.appendLine('🔌 Activation of "n8n-as-code"...');
@@ -245,8 +248,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        registerTelemetryCommand('n8n.configure', async () => {
-            ConfigurationWebview.createOrShow(context, getOrCreateConfigurationController());
+        registerTelemetryCommand('n8n.configure', async (initialTab?: string) => {
+            ConfigurationWebview.createOrShow(
+                context,
+                getOrCreateConfigurationController(),
+                typeof initialTab === 'string' ? initialTab : undefined,
+            );
         }),
     );
 
@@ -669,8 +676,8 @@ export async function activate(context: vscode.ExtensionContext) {
             await setAgentProviderApiKey(context);
         }),
 
-        registerTelemetryCommand('n8n.openSettings', () => {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'n8n');
+        registerTelemetryCommand('n8n.openSettings', async () => {
+            await vscode.commands.executeCommand('n8n.configure');
         }),
 
         registerTelemetryCommand('n8n.resolveConflict', async (arg: any) => {
@@ -1055,9 +1062,9 @@ async function listAgentProviderOptions(): Promise<Array<Record<string, unknown>
 async function listAgentModelOptions(providerId: string): Promise<Array<Record<string, unknown>>> {
     const provider = normalizeAgentProviderId(providerId) || 'openai';
     const definition = AGENT_PROVIDER_DEFINITIONS[provider];
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const selectedProvider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const selectedModel = String(config.get<string>('model') || '').trim();
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const selectedProvider = settings.provider;
+    const selectedModel = settings.model || '';
     const currentModel = provider === selectedProvider
         ? (selectedModel || definition.defaultModel)
         : definition.defaultModel;
@@ -1076,30 +1083,35 @@ async function listAgentModelOptions(providerId: string): Promise<Array<Record<s
 async function selectAgentProviderModel(providerId: string, model: string): Promise<void> {
     const provider = normalizeAgentProviderId(providerId) || 'openai';
     const trimmedModel = model.trim() || AGENT_PROVIDER_DEFINITIONS[provider].defaultModel;
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    await config.update('provider', provider, vscode.ConfigurationTarget.Global);
-    await config.update('model', trimmedModel, vscode.ConfigurationTarget.Global);
+    await updateAgentProviderSettings(contextGlobalState(), { provider, model: trimmedModel });
     await requireAgentProviderService().syncReasoningEffortConfiguration(provider, trimmedModel);
 }
 
 async function selectInlineAgentReasoningEffort(effort: string): Promise<void> {
     const normalized = AGENT_REASONING_EFFORTS.includes(effort as AgentProviderReasoningEffort) ? effort as AgentProviderReasoningEffort : undefined;
     if (!normalized) return;
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const model = String(config.get<string>('model') || '').trim() || undefined;
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model;
     if (!providerSupportsReasoningEffort(provider, model)) {
-        await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(contextGlobalState(), { reasoningEffort: undefined });
         return;
     }
-    await config.update('reasoningEffort', normalized, vscode.ConfigurationTarget.Global);
+    await updateAgentProviderSettings(contextGlobalState(), { reasoningEffort: normalized });
 }
 
 function getSelectedAgentProviderModelLabel(): string {
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = String(config.get<string>('provider') || 'openai').trim() || 'openai';
-    const model = String(config.get<string>('model') || '').trim();
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model || '';
     return model ? `${provider} / ${model}` : provider;
+}
+
+function contextGlobalState(): vscode.Memento {
+    if (!extensionContextForAgentSettings) {
+        throw new Error('Extension context is not initialized.');
+    }
+    return extensionContextForAgentSettings.globalState;
 }
 
 function getWorktreeService(): WorktreeService | undefined {
@@ -1350,8 +1362,7 @@ async function setAgentProviderApiKey(context: vscode.ExtensionContext): Promise
 
 async function setupAgentProvider(context: vscode.ExtensionContext): Promise<void> {
     const service = requireAgentProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const currentProvider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
+    const currentProvider = readAgentProviderSettings(context.globalState).provider;
     const picked = await vscode.window.showQuickPick(
         AGENT_SELECTABLE_PROVIDERS.map((provider) => ({
             provider,
@@ -1387,8 +1398,7 @@ async function setupAgentProvider(context: vscode.ExtensionContext): Promise<voi
 
 async function selectAgentModel(): Promise<void> {
     const service = requireAgentProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const currentProvider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
+    const currentProvider = readAgentProviderSettings(contextGlobalState()).provider;
     const pickedProvider = await vscode.window.showQuickPick(
         AGENT_SELECTABLE_PROVIDERS.map((provider) => ({
             provider,
@@ -1405,7 +1415,7 @@ async function selectAgentModel(): Promise<void> {
     if (!pickedProvider) return;
     const provider = pickedProvider.provider as AgentModelProvider;
     try {
-        await config.update('provider', provider, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(contextGlobalState(), { provider });
         await service.selectModel(provider);
     } catch (error: any) {
         vscode.window.showErrorMessage(`Model selection failed: ${error?.message || String(error)}`);
@@ -1414,9 +1424,9 @@ async function selectAgentModel(): Promise<void> {
 
 async function selectAgentReasoningEffort(): Promise<void> {
     const service = requireAgentProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const model = String(config.get<string>('model') || '').trim() || undefined;
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model;
     try {
         await service.selectReasoningEffort(provider, model);
     } catch (error: any) {

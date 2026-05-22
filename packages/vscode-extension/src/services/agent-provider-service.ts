@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import { getAgentProviderSecretKey } from './agent-runtime-controller.js';
 import { fetchGitHubCopilotModels } from './agent-provider-runtime/copilot-account.js';
+import { readAgentProviderSettings, updateAgentProviderSettings } from './agent-provider-settings.js';
+import { getReasoningCapability, normalizeReasoningEffortForCapability, type AgentReasoningEffort } from './agent-provider-capabilities.js';
+
+export { AGENT_REASONING_EFFORTS } from './agent-provider-capabilities.js';
 
 export type AgentModelProvider =
     | 'anthropic'
@@ -16,9 +20,7 @@ export type AgentModelProvider =
 
 export type ProviderAuthKind = 'api-key' | 'oauth-device' | 'setup-token' | 'none';
 
-export type AgentProviderReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-
-export const AGENT_REASONING_EFFORTS: readonly AgentProviderReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+export type AgentProviderReasoningEffort = AgentReasoningEffort;
 
 export interface AgentProviderDefinition {
     id: AgentModelProvider;
@@ -205,8 +207,8 @@ export function providerNeedsBaseUrlInput(provider: AgentModelProvider): boolean
     return provider === 'openai-compatible';
 }
 
-export function providerSupportsReasoningEffort(provider: AgentModelProvider, _model?: string): boolean {
-    return provider === 'openai-oauth';
+export function providerSupportsReasoningEffort(provider: AgentModelProvider, model?: string): boolean {
+    return getReasoningCapability(provider, model).supported;
 }
 
 export class AgentProviderService {
@@ -221,11 +223,11 @@ export class AgentProviderService {
     }
 
     async listProviderConnectionStates(): Promise<AgentProviderConnectionState[]> {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const selectedProvider = normalizeAgentProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-        const selectedModel = String(config.get<string>('model') || '').trim() || undefined;
-        const configuredBaseUrl = String(config.get<string>('baseUrl') || '').trim() || undefined;
-        const selectedReasoningEffort = this.readReasoningEffort();
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const selectedProvider = settings.provider;
+        const selectedModel = settings.model;
+        const configuredBaseUrl = settings.baseUrl;
+        const selectedReasoningEffort = settings.reasoningEffort;
         const disabledProviders = this.getDisabledProviders();
         const states = await Promise.all(AGENT_SELECTABLE_PROVIDERS.map(async (provider) => {
             const definition = AGENT_PROVIDER_DEFINITIONS[provider];
@@ -256,13 +258,14 @@ export class AgentProviderService {
     async disconnectProvider(provider: AgentModelProvider): Promise<void> {
         await this.context.secrets.delete(getAgentProviderSecretKey(provider));
         await this.setProviderDisabled(provider, true);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const selectedProvider = normalizeAgentProviderId(String(config.get<string>('provider') || ''));
+        const selectedProvider = readAgentProviderSettings(this.context.globalState).provider;
         if (selectedProvider === provider) {
-            await config.update('provider', 'openai', vscode.ConfigurationTarget.Global);
-            await config.update('model', AGENT_PROVIDER_DEFINITIONS.openai.defaultModel, vscode.ConfigurationTarget.Global);
-            await config.update('baseUrl', '', vscode.ConfigurationTarget.Global);
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, {
+                provider: 'openai',
+                model: AGENT_PROVIDER_DEFINITIONS.openai.defaultModel,
+                baseUrl: undefined,
+                reasoningEffort: undefined,
+            });
         }
     }
 
@@ -272,15 +275,16 @@ export class AgentProviderService {
 
     async setupProvider(provider: AgentModelProvider): Promise<boolean> {
         const definition = AGENT_PROVIDER_DEFINITIONS[provider];
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const previousProvider = normalizeAgentProviderId(String(config.get<string>('provider') || ''));
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const previousProvider = settings.provider;
         await this.setProviderDisabled(provider, false);
+        let nextBaseUrl: string | undefined;
 
         if (providerNeedsBaseUrlInput(provider)) {
             const baseUrl = await vscode.window.showInputBox({
                 title: 'OpenAI-compatible base URL',
                 prompt: 'Only OpenAI-compatible providers allow a custom base URL.',
-                value: String(config.get<string>('baseUrl') || ''),
+                value: settings.baseUrl || '',
                 ignoreFocusOut: true,
                 validateInput: (value) => {
                     if (!value.trim()) return 'Base URL is required for OpenAI-compatible providers.';
@@ -288,9 +292,7 @@ export class AgentProviderService {
                 },
             });
             if (baseUrl === undefined) return false;
-            await config.update('baseUrl', baseUrl.trim().replace(/\/$/, ''), vscode.ConfigurationTarget.Global);
-        } else {
-            await config.update('baseUrl', '', vscode.ConfigurationTarget.Global);
+            nextBaseUrl = baseUrl.trim().replace(/\/$/, '');
         }
 
         if (definition.authKind === 'api-key') {
@@ -320,19 +322,19 @@ export class AgentProviderService {
             await this.runDeviceFlow(provider);
         }
 
-        await config.update('provider', provider, vscode.ConfigurationTarget.Global);
-        const currentModel = String(config.get<string>('model') || '').trim();
-        if (!currentModel || previousProvider !== provider) {
-            await config.update('model', definition.defaultModel, vscode.ConfigurationTarget.Global);
-        }
+        const currentModel = settings.model;
+        await updateAgentProviderSettings(this.context.globalState, {
+            provider,
+            baseUrl: nextBaseUrl,
+            model: !currentModel || previousProvider !== provider ? definition.defaultModel : currentModel,
+        });
         return true;
     }
 
     async selectModel(provider: AgentModelProvider): Promise<string | undefined> {
         const definition = AGENT_PROVIDER_DEFINITIONS[provider];
         const models = await this.fetchAvailableModels(provider).catch(() => []);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const currentModel = String(config.get<string>('model') || '').trim() || definition.defaultModel;
+        const currentModel = readAgentProviderSettings(this.context.globalState).model || definition.defaultModel;
         const items = [...new Set([...(models.length ? models : []), definition.defaultModel, currentModel].filter(Boolean))]
             .map((model) => ({ label: model, picked: model === currentModel }));
 
@@ -342,50 +344,50 @@ export class AgentProviderService {
             ignoreFocusOut: true,
         });
         if (!picked) return undefined;
-        await config.update('model', picked.label, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(this.context.globalState, { provider, model: picked.label });
         await this.syncReasoningEffortConfiguration(provider, picked.label);
         return picked.label;
     }
 
     async selectReasoningEffort(provider: AgentModelProvider, model?: string): Promise<AgentProviderReasoningEffort | undefined> {
         if (!providerSupportsReasoningEffort(provider, model)) {
-            const config = vscode.workspace.getConfiguration('n8n.agent');
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: undefined });
             return undefined;
         }
 
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const defaultReasoningEffort = await this.getDefaultReasoningEffort(model || String(config.get<string>('model') || '').trim());
-        const current = this.readReasoningEffort() || defaultReasoningEffort;
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const capability = getReasoningCapability(provider, model || settings.model || '');
+        const defaultReasoningEffort = this.getDefaultReasoningEffort(provider, model || settings.model || '');
+        const current = normalizeReasoningEffortForCapability(settings.reasoningEffort, capability) || defaultReasoningEffort;
         const picked = await vscode.window.showQuickPick(
-            AGENT_REASONING_EFFORTS.map((effort) => ({
+            capability.efforts.map((effort) => ({
                 label: effort,
                 picked: effort === current,
                 description: effort === defaultReasoningEffort ? 'Provider default' : undefined,
             })),
             {
                 title: 'Select reasoning effort',
-                placeHolder: 'Controls how much reasoning budget eligible OpenAI account models can use.',
+                placeHolder: 'Controls provider-specific reasoning or thinking budget when supported.',
                 ignoreFocusOut: true,
             },
         );
         if (!picked) return current;
-        await config.update('reasoningEffort', picked.label as AgentProviderReasoningEffort, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: picked.label as AgentProviderReasoningEffort });
         return picked.label as AgentProviderReasoningEffort;
     }
 
     async syncReasoningEffortConfiguration(provider: AgentModelProvider, model?: string): Promise<AgentProviderReasoningEffort | undefined> {
         if (!providerSupportsReasoningEffort(provider, model)) {
-            const config = vscode.workspace.getConfiguration('n8n.agent');
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: undefined });
             return undefined;
         }
 
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const current = this.readReasoningEffort();
-        const defaultReasoningEffort = await this.getDefaultReasoningEffort(model || String(config.get<string>('model') || '').trim());
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const capability = getReasoningCapability(provider, model || settings.model || '');
+        const current = normalizeReasoningEffortForCapability(settings.reasoningEffort, capability);
+        const defaultReasoningEffort = this.getDefaultReasoningEffort(provider, model || settings.model || '');
         const next = current || defaultReasoningEffort;
-        await config.update('reasoningEffort', next, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: next });
         return next;
     }
 
@@ -393,8 +395,7 @@ export class AgentProviderService {
         const definition = AGENT_PROVIDER_DEFINITIONS[provider];
         if (!definition.canDiscoverModels) return [];
         const apiKey = await this.getStoredCredential(provider) || this.readEnvironmentCredential(provider);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const configuredBaseUrl = String(config.get<string>('baseUrl') || '').trim();
+        const configuredBaseUrl = readAgentProviderSettings(this.context.globalState).baseUrl || '';
         const baseUrl = provider === 'openai-compatible' ? configuredBaseUrl : definition.defaultBaseUrl;
 
         if ((definition.requiresApiKey || provider !== 'openai-compatible') && !apiKey && definition.authKind !== 'none') {
@@ -492,15 +493,10 @@ export class AgentProviderService {
         return [...new Set(MODEL_LIST_MAPPER(payload))];
     }
 
-    private readReasoningEffort(): AgentProviderReasoningEffort | undefined {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const value = String(config.get<string>('reasoningEffort') || '').trim();
-        return AGENT_REASONING_EFFORTS.includes(value as AgentProviderReasoningEffort) ? value as AgentProviderReasoningEffort : undefined;
-    }
-
-    private async getDefaultReasoningEffort(model: string): Promise<AgentProviderReasoningEffort> {
-        const modelId = model || AGENT_PROVIDER_DEFINITIONS['openai-oauth'].defaultModel;
-        return modelId.includes('codex-mini') ? 'minimal' : 'medium';
+    private getDefaultReasoningEffort(provider: AgentModelProvider, model: string): AgentProviderReasoningEffort {
+        const capability = getReasoningCapability(provider, model || AGENT_PROVIDER_DEFINITIONS[provider].defaultModel);
+        if (provider === 'openai-oauth' && model.includes('codex-mini')) return 'minimal';
+        return capability.defaultEffort || 'medium';
     }
 
     private async fetchOpenAiOauthModels(accessToken: string): Promise<string[]> {
