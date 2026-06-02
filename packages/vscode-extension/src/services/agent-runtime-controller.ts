@@ -1215,7 +1215,8 @@ export class AgentRuntimeController implements vscode.Disposable {
         }
 
         const sessionContext = await this.buildSessionState(targetSessionId, input);
-        const promptWorkflowContext = sessionContext.workflowContext;
+        const inputWorkflowContext = this.getInputWorkflowContext(input);
+        const promptWorkflowContext = sessionContext.workflowContext || inputWorkflowContext;
         const promptNodeContexts = sessionContext.nodeContexts.length
             ? sessionContext.nodeContexts
             : this.normalizeNodeContexts(input.nodeContexts || input.nodeContext);
@@ -1241,6 +1242,12 @@ export class AgentRuntimeController implements vscode.Disposable {
         sessions.service.setTitle(targetSessionId, derivedTitle);
 
         let entries = this.withoutContextUsage(this.readSessionEntries(sessions.service, targetSessionId));
+        if (!sessionContext.workflowContext && promptWorkflowContext) {
+            entries = this.withWorkflowContext(entries, promptWorkflowContext);
+        }
+        if (promptWorkflowContext && !sessionContext.nodeContexts.length && promptNodeContexts.length) {
+            entries = this.withNodeContext(entries, promptNodeContexts);
+        }
         const beforeMessageCheckpoint = await this.saveBeforeUserMessageCheckpoint(sessions.service, targetSessionId, entries, prompt, input.workspaceRoot);
         entries = [...entries, {
             kind: 'user-message',
@@ -2552,10 +2559,18 @@ export class AgentRuntimeController implements vscode.Disposable {
     }
 
     private async loadWorkflowContext(input: AgentPromptInput): Promise<string | undefined> {
-        if (!input.workflowId && !input.workflowFilename) {
+        if (!input.workflowId && !input.workflowFilename && !input.workflowFilePath) {
             return undefined;
         }
         const candidates: string[] = [];
+        const workflowFilePath = input.workflowFilePath?.trim();
+        if (workflowFilePath) {
+            candidates.push(path.isAbsolute(workflowFilePath)
+                ? workflowFilePath
+                : input.workspaceRoot
+                    ? path.resolve(input.workspaceRoot, workflowFilePath)
+                    : workflowFilePath);
+        }
         if (input.workspaceRoot && input.workflowFilename) {
             candidates.push(path.join(input.workspaceRoot, input.workflowFilename));
             candidates.push(path.join(input.workspaceRoot, 'workflows', input.workflowFilename));
@@ -2565,12 +2580,21 @@ export class AgentRuntimeController implements vscode.Disposable {
         }
         for (const candidate of [...new Set(candidates)]) {
             try {
+                if (!this.isPathAllowedForWorkflowContext(candidate, input.workspaceRoot)) continue;
                 const stat = await fs.promises.stat(candidate);
                 if (!stat.isFile() || stat.size > 400_000) continue;
                 const content = await fs.promises.readFile(candidate, 'utf8');
+                const extension = path.extname(candidate).toLowerCase();
+                const isTypeScriptWorkflow = candidate.endsWith('.workflow.ts') || extension === '.ts';
+                const isJsonWorkflow = extension === '.json';
                 return [
-                    'Selected workflow JSON context:',
-                    '```json',
+                    isTypeScriptWorkflow
+                        ? 'Selected workflow TypeScript context:'
+                        : isJsonWorkflow
+                            ? 'Selected workflow JSON context:'
+                            : 'Selected workflow file context:',
+                    `Path: ${input.workspaceRoot ? path.relative(input.workspaceRoot, candidate).replace(/\\/g, '/') : candidate}`,
+                    isTypeScriptWorkflow ? '```ts' : isJsonWorkflow ? '```json' : '```',
                     content,
                     '```',
                 ].join('\n');
@@ -2582,8 +2606,14 @@ export class AgentRuntimeController implements vscode.Disposable {
             'Selected workflow metadata:',
             `Name: ${input.workflowName || 'unknown'}`,
             `ID: ${input.workflowId || 'not yet available'}`,
-            'Workflow JSON was not found in the workspace. Explain only from available metadata and say when JSON details are needed.',
+            'Workflow source was not found in the workspace. Explain only from available metadata and say when source details are needed.',
         ].join('\n');
+    }
+
+    private isPathAllowedForWorkflowContext(candidate: string, workspaceRoot?: string): boolean {
+        if (!workspaceRoot) return true;
+        const relative = path.relative(workspaceRoot, candidate);
+        return Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
     }
 
     private extractAgentText(result: unknown): string {
@@ -3096,6 +3126,18 @@ export class AgentRuntimeController implements vscode.Disposable {
                     filename: workflow.filename?.trim() || undefined,
                     filePath: workflow.filePath?.trim() || undefined,
                 },
+            },
+        ];
+    }
+
+    private withNodeContext(entries: AgentTimelineEntry[], nodes: AgentNodeContext[]): AgentTimelineEntry[] {
+        return [
+            ...entries,
+            {
+                kind: 'node-context',
+                id: randomUUID(),
+                timestamp: Date.now(),
+                nodes: this.normalizeNodeContexts(nodes),
             },
         ];
     }

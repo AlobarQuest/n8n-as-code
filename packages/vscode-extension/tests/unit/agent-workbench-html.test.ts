@@ -36,6 +36,23 @@ test('Agent Workbench HTML: forwards node detail context to the agent', () => {
     assert.ok(html.includes('nodeContexts: currentNodeContexts'), 'Must include node contexts when sending prompts');
 });
 
+test('Agent Workbench HTML: context badge removal subtracts persisted context', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes('Remove node context'), 'Node context badges must expose a remove action');
+    assert.ok(html.includes('setNodeContexts(currentNodeContexts.filter((candidate) => !sameNode(candidate, node)), true);'), 'Removing a node badge must persist the remaining selected nodes');
+    assert.ok(html.includes('Detach workflow context'), 'Workflow context badge must expose a detach action');
+    assert.ok(html.includes("vscode.postMessage({ type: 'agent.context.workflow.clear', sessionId: state.activeSessionId });"), 'Detaching workflow context must clear workflow and node context in the runtime');
+    assert.ok(html.includes("message.type === 'n8n-node-context-cleared'"), 'Iframe node context clears must persist an empty node context list');
+    assert.ok(html.includes('setNodeContexts([], true);'), 'Iframe node context clears must notify the extension host');
+});
+
 test('Agent Workbench HTML: renders provider/session controls', () => {
     const { AGENT_WORKBENCH_BUILD, buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
     const html: string = buildAgentWorkbenchHtml({
@@ -405,6 +422,29 @@ test('Agent Workbench webview: workflow menu options preserve local file paths',
     assert.ok(source.includes('workflowFilePath: this._workflowFilePath'), 'Initial HTML must receive the current workflow file path');
     assert.ok(source.includes("workflowFilename: workflow?.filename || ''"), 'Workflow update messages must preserve filename');
     assert.ok(source.includes('workflowFilePath: workflowFilePath ||'), 'Workflow update messages must preserve file path');
+});
+
+test('Agent runtime: selected node context remains additive to workflow context', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes('const inputWorkflowContext = this.getInputWorkflowContext(input);'), 'Prompt setup must keep the open workbench workflow as a fallback context');
+    assert.ok(source.includes('const promptWorkflowContext = sessionContext.workflowContext || inputWorkflowContext;'), 'Selected nodes must not leave the prompt without workflow context');
+    assert.ok(source.includes('entries = this.withWorkflowContext(entries, promptWorkflowContext);'), 'Fallback workflow context must be persisted before the user message');
+    assert.ok(source.includes('entries = this.withNodeContext(entries, promptNodeContexts);'), 'Selected node contexts must be persisted as additive context');
+});
+
+test('Agent runtime: workflow context loader reads resolved local workflow paths', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes('!input.workflowId && !input.workflowFilename && !input.workflowFilePath'), 'Workflow file path alone must be enough to request workflow context');
+    assert.ok(source.includes('const workflowFilePath = input.workflowFilePath?.trim();'), 'Loader must read the resolved workflow file path');
+    assert.ok(source.includes('path.resolve(input.workspaceRoot, workflowFilePath)'), 'Relative workflow paths must resolve under the workspace root');
+    assert.ok(source.includes('Selected workflow TypeScript context:'), 'TypeScript workflow source must be included in the prompt context');
+    assert.ok(source.includes('isPathAllowedForWorkflowContext'), 'Resolved workflow paths must stay scoped to the workspace');
 });
 
 test('Agent runtime: start state includes checkpointed user message', () => {
