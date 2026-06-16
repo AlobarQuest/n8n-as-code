@@ -4,13 +4,50 @@ on:
   schedule:
     - cron: '0 6 * * *'  # 6 AM UTC daily
   workflow_dispatch:
+    inputs:
+      selftest:
+        description: "Verify ANTHROPIC_API_KEY: run the AI review on a fixed historical tag range, no sync/PR"
+        type: boolean
+        default: false
 
 concurrency:
   group: upstream-sync
   cancel-in-progress: true
 
 jobs:
+  # One-off verification that the ANTHROPIC_API_KEY secret works end-to-end in CI
+  # (run after setting/rotating the key). Exercises the real review step against
+  # v2.3.6..v2.4.0; creates no branch or PR.
+  selftest:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.selftest }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream https://github.com/EtienneLescot/n8n-as-code.git || true
+          git fetch upstream --tags
+      - name: Run AI review (verifies the key)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: v2.3.6
+          HEAD_REF: v2.4.0
+        run: |
+          python3 .github/scripts/ai_security_review.py | tee /tmp/selftest.md
+          {
+            echo '## 🔑 ANTHROPIC_API_KEY self-test (v2.3.6 → v2.4.0)'
+            echo
+            cat /tmp/selftest.md
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q "ANTHROPIC_API_KEY not set\|Error generating AI review" /tmp/selftest.md; then
+            echo "::error::AI review did not run with a valid key — check the secret."
+            exit 1
+          fi
+
   sync:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.selftest) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
