@@ -447,11 +447,8 @@ jobs:
           body_path: github-release-notes.md
           make_latest: true
 
-      - name: Sync next to main
-        if: steps.pending.outputs.pending == 'true'
-        run: |
-          git fetch origin main
-          git push origin HEAD:refs/heads/next --force
+      # ponytail: branch protection on next blocks force-push;
+      # sync main -> next manually after stable release when needed.
 
   create-release-pr:
     name: Create Release PR
