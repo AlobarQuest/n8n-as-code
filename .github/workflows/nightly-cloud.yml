@@ -11,6 +11,7 @@ jobs:
     environment: next
     permissions:
       contents: write
+      pull-requests: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
       N8N_HOST: ${{ vars.N8N_HOST }}
