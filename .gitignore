@@ -96,3 +96,4 @@ test-results/
 .tmp/
 
 native_mcp_config.json
+__pycache__/
