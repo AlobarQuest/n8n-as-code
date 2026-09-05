@@ -7,6 +7,7 @@ import { getWorkspaceRoot } from '../utils/state-detection.js';
 import type { N8nConfigurationController, N8nConfigurationSnapshot } from '../services/n8n-configuration-controller.js';
 import { AgentProviderService, normalizeAgentProviderId } from '../services/agent-provider-service.js';
 import { getConfigurationHtml } from './configuration-webview-html.js';
+import { ConfigurationInstanceEnrichmentCache } from './configuration-instance-enrichment.js';
 import { loadProjectsForConfigurationWebview } from './configuration-webview-projects.js';
 
 type ManagedSetupJob = {
@@ -114,6 +115,7 @@ export class ConfigurationWebview {
   private _initialTab: string | undefined;
   private readonly _managedSetupJobs = new Map<string, ManagedSetupJob>();
   private readonly _managedSetupJobCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly _instanceEnrichmentCache = new ConfigurationInstanceEnrichmentCache();
   private _queuedPinEnvironmentId: string | undefined;
   private _pinEnvironmentTask: Promise<void> | undefined;
 
@@ -388,9 +390,15 @@ export class ConfigurationWebview {
               });
             }
           }
-          if (environmentTargetId && url && apiKey) {
-            configService.saveWorkspaceTargetApiKey(environmentTargetId, apiKey);
+          if (environmentTargetId && configService.getInstanceTarget(environmentTargetId).kind === 'managed-instance') {
+            // A managed instance owns its credentials, so a workspace key stored against it would
+            // never be read. Drop any legacy one instead of persisting a dead secret.
+            configService.deleteWorkspaceTargetApiKey(environmentTargetId);
           }
+          // The key entered here belongs to this one environment and is stored against it below.
+          // It must not also be written to the shared environment target, which every key-less
+          // environment on the same base URL reads: that would let one environment silently
+          // authenticate as another, and each save would repoint every environment sharing the URL.
           const workflowsPath = normalizeWorkflowsPath(String(payload.workflowsPath || '').trim());
           const folderSync = typeof payload.folderSync === 'boolean' ? payload.folderSync : undefined;
           const nativeMcpToken = String(payload.nativeMcpToken || '').trim();
@@ -415,6 +423,14 @@ export class ConfigurationWebview {
           const savedEnvironment = environmentId
             ? configService.updateEnvironment(environmentId, input)
             : configService.addEnvironment(input);
+          // Moving an environment to another target already drops its stored key in updateEnvironment.
+          if (configService.getInstanceTarget(savedEnvironment.environmentTargetId).kind === 'managed-instance') {
+            // Managed instances own their credentials, so this environment must not keep a workspace key.
+            configService.deleteWorkspaceEnvironmentApiKey(savedEnvironment.id);
+          } else if (apiKey) {
+            // Bind the key to this environment so environments sharing a base URL keep separate credentials.
+            configService.saveWorkspaceEnvironmentApiKey(savedEnvironment.id, apiKey);
+          }
           if (nativeMcpToken) {
             (configService as NativeMcpConfigService).saveNativeMcpToken(savedEnvironment.id, nativeMcpToken);
           } else if (nativeMcp && nativeMcp.enabled === false) {
@@ -490,6 +506,7 @@ export class ConfigurationWebview {
             if (action === 'stop') await globalFacade.stopInstance(instanceId);
             if (action === 'restart') await globalFacade.restartInstance(instanceId);
           });
+          this.invalidateInstanceEnrichment(instanceId);
           await this._configurationController.refresh(`webview-${action}-instance`, { force: true });
           this.notifySaved();
           return;
@@ -509,6 +526,7 @@ export class ConfigurationWebview {
             mode: 'reconcile',
             refreshPublicUrl: true,
           }));
+          this.invalidateInstanceEnrichment(instanceId);
           await this._configurationController.refresh('webview-refresh-public-url', { force: true });
           this.notifySaved();
           if (access.warnings.length) {
@@ -965,51 +983,9 @@ export class ConfigurationWebview {
     const globalConfig = currentSnapshot.global;
     const workspaceOverrides = currentSnapshot.workspace;
     const effectiveContext = currentSnapshot.effective;
-    const instances = await Promise.all(globalConfig.instances.map(async (instance) => {
-      try {
-        const runtime = await instanceFacade.status({ instanceId: instance.id });
-        const access = await instanceFacade.resolveInstanceAccess({
-          instanceId: instance.id,
-          mode: 'observe',
-        });
-        const displayUrl = access.authUrl || access.publicN8nUrl || (access.publicUrlEnabled ? '' : access.apiBaseUrl || '');
-        return {
-          ...instance,
-          host: displayUrl,
-          displayUrl,
-          authBridgePublicUrl: access.authUrl,
-          verificationStatus: instance.verification?.status || 'unverified',
-          verificationLabel: instance.verification?.status === 'verified'
-            ? 'Verified'
-            : instance.verification?.status === 'failed'
-              ? 'Verification failed'
-              : 'Not verified yet',
-          runtimeStatus: runtime.status,
-          runtimeReady: 'ready' in runtime ? runtime.ready : runtime.status === 'ready',
-          ownerCredentialsAvailable: Boolean(runtime.instance?.ownerCredentialsAvailable),
-          runtimeBlockedCode: 'blocked' in runtime ? runtime.blocked?.code : undefined,
-          runtimeBlockedMessage: 'blocked' in runtime ? runtime.blocked?.message : undefined,
-          runtimeWarnings: access.warnings.length ? access.warnings : ('warnings' in runtime ? runtime.warnings : undefined),
-          tunnelRunning: access.tunnel?.running,
-          tunnelPublicUrl: access.publicN8nUrl || instance.tunnelPublicUrl,
-          access,
-        };
-      } catch (error: any) {
-        return {
-          ...instance,
-          host: instance.tunnelPublicUrl || instance.baseUrl || '',
-          verificationStatus: instance.verification?.status || 'unverified',
-          verificationLabel: instance.verification?.status === 'verified'
-            ? 'Verified'
-            : instance.verification?.status === 'failed'
-              ? 'Verification failed'
-              : 'Not verified yet',
-          runtimeStatus: 'unknown',
-          runtimeReady: false,
-          runtimeBlockedMessage: error?.message || 'Runtime status unavailable.',
-        };
-      }
-    }));
+    const instances = await Promise.all(globalConfig.instances.map((instance) => (
+      this._instanceEnrichmentCache.enrich(instance, instanceFacade)
+    )));
 
     this._panel.webview.postMessage({
       type: 'init',
@@ -1043,6 +1019,10 @@ export class ConfigurationWebview {
       this._panel.webview.postMessage({ type: 'activeTab', tab: this._initialTab });
       this._initialTab = undefined;
     }
+  }
+
+  private invalidateInstanceEnrichment(instanceId: string): void {
+    this._instanceEnrichmentCache.invalidate(instanceId);
   }
 
   private getHtmlForWebview(): string {

@@ -10,6 +10,7 @@ import {
     SyncManager, CliApi, N8nApiClient, IN8nCredentials, WorkflowSyncStatus, ConfigService,
     resolveInstanceIdentifier, isCanonicalUserInstanceIdentifier, SYNC_EVENT_JOURNAL_FILENAME, type SyncEvent,
     type ITestPlan, type IWorkflowStatus,
+    isCertificateTrustError, CERTIFICATE_TRUST_HINT,
 } from 'n8nac';
 import { AiContextGenerator, getN8nacDevConfigFilenames } from '@n8n-as-code/skills';
 
@@ -41,6 +42,7 @@ import {
     type N8nConfigurationSnapshot,
 } from './services/n8n-configuration-controller.js';
 import { workflowWebviewRegistry } from './services/workflow-webview-registry.js';
+import { applyTlsTrustSettings, registerTlsTrustSettingsWatcher } from './services/tls-trust.js';
 import { createN8nManagerFacade } from '@n8n-as-code/manager-adapter';
 import { createTelemetryClient, type TelemetryClient } from '@n8n-as-code/telemetry';
 import { ExtensionState } from './types.js';
@@ -125,6 +127,7 @@ let telemetryClient: TelemetryClient | undefined;
 
 const conflictStore = new Map<string, string>();
 const processedSyncEventIds = new Set<string>();
+const syncEventJournalSignatures = new Map<string, string>();
 
 const AI_CONTEXT_METADATA_RELATIVE_PATH = path.join('.n8nac', 'ai-context.json');
 const AI_CONTEXT_SIGNATURE_SCHEMA_VERSION = 1;
@@ -140,12 +143,19 @@ type AiContextMetadata = {
 
 async function processSyncEventJournal(journalUri: vscode.Uri, source: string, markOnly = false): Promise<void> {
     if (!fs.existsSync(journalUri.fsPath)) return;
+    const signature = getFileChangeSignature(journalUri.fsPath);
+    if (!markOnly && signature && syncEventJournalSignatures.get(journalUri.fsPath) === signature) {
+        return;
+    }
     let raw: Uint8Array;
     try {
         raw = await vscode.workspace.fs.readFile(journalUri);
     } catch (err) {
         console.error('[n8n] Failed to read sync event journal', err);
         return;
+    }
+    if (signature) {
+        syncEventJournalSignatures.set(journalUri.fsPath, signature);
     }
 
     const lines = Buffer.from(raw).toString('utf8').split('\n').filter(Boolean);
@@ -172,6 +182,15 @@ async function processSyncEventJournal(journalUri: vscode.Uri, source: string, m
         }
         const reloaded = workflowWebviewRegistry.reloadIfMatching(event.workflowId);
         outputChannel.appendLine(`[n8n-agent-debug] ${source} push success workflowId=${event.workflowId} filename=${event.filename || 'none'} reloaded=${reloaded}`);
+    }
+}
+
+function getFileChangeSignature(filePath: string): string | undefined {
+    try {
+        const stat = fs.statSync(filePath);
+        return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+        return undefined;
     }
 }
 
@@ -230,6 +249,15 @@ export async function activate(context: vscode.ExtensionContext) {
     } catch {
         // Keep activation moving so command registration still happens in Cursor-compatible hosts.
     }
+
+    try {
+        // Must run before the first n8n request: the extension host ignores NODE_EXTRA_CA_CERTS.
+        applyTlsTrustSettings((message) => outputChannel.appendLine(message));
+        context.subscriptions.push(registerTlsTrustSettingsWatcher((message) => outputChannel.appendLine(message)));
+    } catch (error: any) {
+        outputChannel.appendLine(`[n8n] TLS trust setup failed: ${error?.message || error}`);
+    }
+
     const registerTelemetryCommand = (command: string, callback: (...args: any[]) => any): vscode.Disposable => (
         vscode.commands.registerCommand(command, async (...args: any[]) => {
             const telemetry = telemetryClient;
@@ -914,6 +942,7 @@ async function openAgentWorkbench(context: vscode.ExtensionContext, workflow?: I
             outputChannel,
             {
                 listWorkflows: listAgentWorkflowOptions,
+                listWorkflowOptions: listAgentWorkflowContextOptions,
                 resolveWorkflow: resolveAgentWorkflowTarget,
                 listWorkflowNodes: listAgentWorkflowNodes,
                 listProviderOptions: listAgentProviderOptions,
@@ -973,8 +1002,24 @@ async function listAgentWorkflowOptions(): Promise<IWorkflowStatus[]> {
     return selectAllWorkflows(store.getState());
 }
 
+async function listAgentWorkflowContextOptions(): Promise<AgentWorkflowContext[]> {
+    const workflows = selectAllWorkflows(store.getState());
+    // This transient menu path may refresh through cli.list, but it must not
+    // dispatch into the global store: listAgentWorkflowOptions owns that stateful
+    // refresh, and keeping this side-effect-free avoids extra webview churn.
+    const source = cli
+        ? await cli.list({ includeArchived: true }).catch(() => workflows)
+        : workflows;
+    return source.map((workflow) => ({
+        id: workflow.id || undefined,
+        name: workflow.name || workflow.id || workflow.filename || 'Workflow',
+        filename: workflow.filename || undefined,
+        filePath: getExistingWorkflowFileUri(workflow)?.fsPath,
+    }));
+}
+
 async function resolveAgentWorkflowTarget(workflowContext: AgentWorkflowContext): Promise<{ workflow?: IWorkflowStatus; workflowFilePath?: string; workflowUrl?: string; workflowReloadUrl?: string; workflowEndpoints?: WorkflowWebviewContext['endpoints'] }> {
-    const workflows = await listAgentWorkflowOptions();
+    const workflows = selectAllWorkflows(store.getState());
     const workflow = workflows.find((candidate) => (
         Boolean(workflowContext.id && candidate.id === workflowContext.id)
         || Boolean(workflowContext.filename && candidate.filename === workflowContext.filename)
@@ -1827,6 +1872,7 @@ function resetExtensionRuntimeState(): void {
     syncManager = undefined;
     cli = undefined;
     conflictStore.clear();
+    syncEventJournalSignatures.clear();
     enhancedTreeProvider.setSyncManager(undefined);
     clearSyncManager();
     store.dispatch(setWorkflows([]));
@@ -1963,6 +2009,12 @@ function getHttpStatus(error: any): number | undefined {
     return error?.response?.status;
 }
 
+// Delegates to the shared classifier so `fetch` failures are recognised too: undici reports
+// them as `TypeError: fetch failed` and hides the real code in `error.cause`.
+function isTlsError(error: any): boolean {
+    return isCertificateTrustError(error);
+}
+
 function formatN8nApiError(error: any, host: string): string {
     const status = getHttpStatus(error);
     if (status === 401) {
@@ -1975,7 +2027,11 @@ function formatN8nApiError(error: any, host: string): string {
         return `The n8n workflows API is not available at "${host}". Check the instance URL.`;
     }
     if (!error?.response) {
-        return `Cannot connect to n8n at "${host}": ${error?.message || error}`;
+        const base = `Cannot connect to n8n at "${host}": ${error?.message || error}`;
+        if (isTlsError(error)) {
+            return `${base}\n${CERTIFICATE_TRUST_HINT}`;
+        }
+        return base;
     }
     return `n8n API request failed at "${host}" with status ${status}: ${error?.message || error}`;
 }
@@ -2282,7 +2338,7 @@ async function updateAiContextAfterSyncInitialization(
 ): Promise<void> {
     const currentVersion = versionHint || await resolveAiContextVersion(context, client, undefined, true);
     try {
-        await ensureAiContextFresh(context, 'sync-initialized', { force: true, versionHint: currentVersion });
+        await ensureAiContextFresh(context, 'sync-initialized', { versionHint: currentVersion });
     } catch (error: any) {
         outputChannel.appendLine(`[n8n] Failed to auto-generate AI context: ${error.message}`);
     }
@@ -2390,7 +2446,10 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
             }, { setActive: false });
         }
     } catch (error: any) {
-        throw new Error(`Cannot connect to n8n instance at "${host}". Please check if n8n is running.`);
+        const reason = isCertificateTrustError(error)
+            ? ` ${error?.message || error} ${CERTIFICATE_TRUST_HINT}`
+            : ' Please check if n8n is running.';
+        throw new Error(`Cannot connect to n8n instance at "${host}".${reason}`);
     }
 
     // Create SyncManager (the stateful engine: WorkflowStateTracker, events, etc.)
