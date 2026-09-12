@@ -388,7 +388,9 @@ async function enrichNodesIndex() {
     let enrichedCount = 0;
 
     for (const node of nodesIndex.nodes) {
-        const nodeKey = node.name;
+        // Nodes whose short name is taken by another package are keyed by full type
+        // (see generate-n8n-index.cjs), so both variants survive in the index.
+        const nodeKey = node.indexKey || node.name;
 
         // Find matching documentation
         let docData = null;
@@ -498,7 +500,8 @@ async function enrichNodesIndex() {
         fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(output, null, 2));
+    // Minified: machine-read asset shipped in the npm package.
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(output));
 
     console.log('\n✨ Enrichment complete!');
     console.log(`📊 Statistics:`);

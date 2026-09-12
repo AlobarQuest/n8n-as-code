@@ -127,85 +127,47 @@ npm run check-versions
 
 If dependency alignment fails, run `npm run sync:deps`, review the manifest diff, and commit the updated package files with the original change. If new `n8n-manager` releases are available, use `npm run update:n8n-manager` first.
 
-### Release Workflow
+### Release Workflow (RC model)
 
-#### Push to `next`
-
-- Every push to `next` computes prerelease bumps from commit messages.
-- Internal dependency versions are re-pinned automatically from the workspace package graph.
-- Changed public packages are published to npm with the `next` dist-tag.
-- The VS Code extension follows the official Marketplace recommendation: stable releases use even minor lines and prereleases use odd minor lines.
-- The prerelease line is intentionally kept above the stable version that the same changes will later publish from `main`, so preview users are not forced back to stable.
-- Example: if the current stable extension is `0.21.0`, the next stable release becomes `0.22.0` and prereleases on `next` become `0.23.1`, `0.23.2`, `0.23.3`, and so on.
-- Open VSX prereleases remain disabled.
-
-#### Push to `main`
-
-- If any package version in `package.json` is already ahead of its latest stable tag, `main` publishes that version directly instead of opening a new release PR.
-- A push to `main` creates or updates a single release PR only when no package is already ahead of its latest stable tag and commit history requires version bumps.
-- The release PR updates package versions, internal dependency versions, and changelogs together.
-- For the VS Code extension, stable releases always land on patch `0` of the next even minor line.
-- Example: after prereleases on `0.23.x`, the next stable extension release becomes `0.22.0`, and the following cycle starts with prereleases on `0.25.x`.
-
-#### Merge the release PR
-
-1. The merged `package.json` versions become the stable source of truth.
-2. Changed npm packages are published in dependency order.
-3. The VS Code extension is published from the exact version committed in `packages/vscode-extension/package.json`.
-4. Stable git tags are pushed for each released package.
-5. The workflow force-aligns `next` back to `main`, or recreates `next` if it was deleted.
-
-### Example: How Internal Dependencies Stay Synchronized
-
-Let's say you fix a bug in the sync engine (embedded in `n8nac`):
-
-```bash
-# 1. Push a conventional commit to next
-git commit -m "fix(cli): handle sync edge case"
-
-# 2. Merge next into main
-# 3. Let the release PR bump versions automatically
-```
-
-**Result:**
-- `n8nac`: `0.11.4` → `0.11.5` ✅
-- `@n8n-as-code/mcp`: patch release if it depends on the changed `n8nac` version ✅
-- `VS Code Extension`: `0.21.0` → `0.22.0` on `main`, while `next` prereleases are published on `0.23.x` ✅
-
-All packages that depend on `n8nac` will have their `package.json` updated to reference the newly released stable version.
+- All merges land on `main` — there is no `next` branch anymore.
+- Nothing is published automatically when code lands on `main`.
+- A maintainer cuts a release candidate with the **Release** workflow (Actions → *Release* → *Run workflow*, `action: rc`): pick `patch`/`minor`/`major` and the RC number.
+  - This creates (rc.1) or reuses (rc.2+, it carries cherry-picks) the frozen branch `release/vX.Y.Z`, bumps every changed package to `X.Y.Z-rc.N` **on that branch only**, publishes them to npm under the `next` dist-tag (mirrored to `rc`), publishes the VS Code extension as a pre-release, tags `vX.Y.Z-rc.N`, and opens a GitHub prerelease.
+  - Packages without changes since their last stable tag are not re-published.
+- Bug fixes during the RC window are cherry-picked by a maintainer onto `release/vX.Y.Z`; re-running the workflow with the next RC number re-cuts and publishes `-rc.N+1`.
+- When the RC is validated, a maintainer runs the **Release** workflow (`action: promote`) with the RC tag (e.g. `v2.6.0-rc.2`):
+  - Final versions and changelogs are written on the release branch, npm packages are published under `latest`, the VS Code extension goes stable on the Marketplace and Open VSX, per-package tags and the `vX.Y.Z` tag are pushed, and the GitHub release is marked latest.
+  - `main` is then synchronized with the released versions through an automated sync pull request. Release branches are kept for forensics and backports.
+- The full operator runbook lives in [Release operations](/contribution/release).
 
 ### Workflow Summary Diagram
 
 ```
-Developer pushes conventional commits to next
+Maintainer merges PRs to main (conventional commits)
        ↓
-CI publishes prereleases from next
+Maintainer dispatches "Release" (action: rc)
+        → release/vX.Y.Z branch + vX.Y.Z-rc.N tag
+        → npm dist-tags next + rc + VS Code pre-release
+        ↓
+Cherry-pick fixes onto release/vX.Y.Z, re-cut rc.N+1 if needed
+        ↓
+Maintainer dispatches "Release" (action: promote) with the rc tag
        ↓
-next is merged into main
+Stable release: npm latest + VS Code + Open VSX + tags + GitHub release
        ↓
-CI creates or updates a release PR
-       ↓
-Maintainer merges the release PR
-       ↓
-CI automatically:
-  ├─→ Publishes stable npm packages in dependency order
-  ├─→ Tags released package versions
-  ├─→ Publishes the VS Code extension from package.json
-  └─→ Re-aligns next on top of main
+Automated sync PR brings versions and changelogs back to main
 ```
 
 ### Key Rules
 - **Never manually edit release versions in PRs by hand** unless you are intentionally repairing the release flow
-- **Use conventional commits** so the CI can derive `major`, `minor`, or `patch` automatically
+- **Use conventional commits** so the RC workflow can derive `major`, `minor`, or `patch` automatically
 - **Package-scoped `docs(...)` commits also count as patch releases** when they touch files inside a released package
-- **The VS Code extension uses even minor lines for stable releases and odd minor lines for prereleases**
-- **The prerelease line must stay numerically above the stable release that will be published next**
-- **The VS Code extension version line is driven from `packages/vscode-extension/package.json`**
+- **Prerelease versions are `X.Y.Z-rc.N`** — on the VS Code Marketplace they ship as `X.(Y-1).N` under the even/odd minor scheme (even minor = stable, odd minor = pre-release); see [Release operations](/contribution/release)
 - **Internal dependencies are automatically discovered from package manifests and re-pinned** whenever an upstream package is bumped
 - **Use `npm run sync:deps`** before committing package manifest changes when the hook cannot run
 - **Use `npm run check:deps` or `npm run check-versions`** to verify all internal and n8n-manager dependency specs are up to date
-- **Git tags are created automatically** for each published NPM package
-- **Each package has independent releases** - No global monorepo release
+- **Git tags are created automatically** for each published npm package, at promote time
+- **Each package has independent releases** — no global monorepo release
 
 ## 📝 Contribution Guidelines
 
@@ -215,10 +177,10 @@ CI automatically:
 - Write comprehensive tests for new features
 
 ### Pull Request Process
-1. Create a feature branch from `next`
+1. Create a feature branch from `main`
 2. Make your changes with tests
 3. Ensure all tests pass
-4. Submit a pull request with clear description targeting `next`
+4. Submit a pull request with clear description targeting `main`
 
 ### Documentation
 - Update relevant documentation when adding features
