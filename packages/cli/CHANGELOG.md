@@ -1,5 +1,109 @@
 # @n8n-as-code/cli
 
+## [2.7.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.6.0...n8nac@v2.7.0) (2026-09-11)
+
+### Features
+
+* **cli:** say so when the installed n8nac is behind what is published ([36b3f23](https://github.com/EtienneLescot/n8n-as-code/commit/36b3f231cb1a4c8c66fdf8f0c936c701579c9414))
+
+### Bug Fixes
+
+* **cli,vscode:** quote for cmd.exe, and stop keeping four copies of the rule ([c366dcf](https://github.com/EtienneLescot/n8n-as-code/commit/c366dcf36dbad42eee81967a1f8c9969cd46be79))
+
+### Documentation
+
+* **cli:** say what the Windows quoting does not promise ([62020a4](https://github.com/EtienneLescot/n8n-as-code/commit/62020a40722736ad64489a1d5e3f81a3b9ef0b03))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/mcp bumped from 2.2.1-rc.1 to 2.2.1
+    * @n8n-as-code/skills bumped from 2.4.1-rc.1 to 2.4.1
+
+## [2.6.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.5.0...n8nac@v2.6.0) (2026-09-11)
+
+### Features
+
+* **skills,cli:** benchmark-driven agent efficiency (batch, compact, --pin) ([d633070](https://github.com/EtienneLescot/n8n-as-code/commit/d633070762e3c2e2e7baab8b22f06db2e0e9793d))
+* **levels:** level awareness in generated context, L0 disclaimers, VS Code slider ([5e69983](https://github.com/EtienneLescot/n8n-as-code/commit/5e699839775267b3ddfcb843fa47988c43280d3a))
+* **cli:** native MCP usage levels and per-instance schema overlay (L1) ([67cc38f](https://github.com/EtienneLescot/n8n-as-code/commit/67cc38f7869f212a346082a928b11df54ad71da1))
+* **cli:** mark folder-login as experimental and document SSO/2FA workaround ([9b80f1b](https://github.com/EtienneLescot/n8n-as-code/commit/9b80f1b7d7b0583d13553d1c5f5aa7142134b9e6))
+* **cli:** optional /rest session folder-source for folderSync pull ([fe0fb5c](https://github.com/EtienneLescot/n8n-as-code/commit/fe0fb5c779824916bd1072306bcbbf5bcc6a7b3e))
+* **cli:** warn that push releases published workflows, add --draft ([d32ff51](https://github.com/EtienneLescot/n8n-as-code/commit/d32ff515d949f51c54e535b8354930dd3f7f4208))
+
+### Bug Fixes
+
+* **cli,skills,mcp:** cut agent round-trips and startup cost, plus the fixes the benchmark surfaced ([34395b5](https://github.com/EtienneLescot/n8n-as-code/commit/34395b58017ca2645cd3f143aa58590393036e00))
+* **cli:** branch setup next-step hint on managed-local mode ([364c41c](https://github.com/EtienneLescot/n8n-as-code/commit/364c41c9cae6745bccc7d5467577b4589636b82a))
+* **cli:** include parser discriminator capture omitted from previous commit ([a51a663](https://github.com/EtienneLescot/n8n-as-code/commit/a51a6631b66d96b602d76a36a02de4dfd3b21536))
+* **review:** overlay descriptor identity, level parsing, refresh fingerprint, fetch timeout ([1bbd2ef](https://github.com/EtienneLescot/n8n-as-code/commit/1bbd2ef35e132af2ee6dc89374d40dccfede3ac2))
+* **review:** fail-closed MCP redirects and machine-readable --print-tag ([fdc3c36](https://github.com/EtienneLescot/n8n-as-code/commit/fdc3c366d5c007395ee2e48cc59a3cd8217751a3))
+* **validation:** automatic instance probing, strict RLC shapes and ontology source selection ([b37a256](https://github.com/EtienneLescot/n8n-as-code/commit/b37a256cb4f01ade8476a06de7447bff646e0a97))
+* **validation:** enforce server-equivalent node gating and pre-push instance validation ([81cf635](https://github.com/EtienneLescot/n8n-as-code/commit/81cf6356311244f6bc139b9af73a9603aa0a68ef))
+* **transformer:** persist continueOnFail and pass through unmodelled node properties ([e03e448](https://github.com/EtienneLescot/n8n-as-code/commit/e03e4482b21522f04ee625abf666c44201e05ced))
+* **cli:** block folderAuth over cleartext non-loopback HTTP without opt-in ([95d16a4](https://github.com/EtienneLescot/n8n-as-code/commit/95d16a41f1e0f6a22a802dc2d142c916a362fb96))
+* **cli:** resolve CodeRabbit review feedback on fail-closed rethrow, login redirect and password flags ([db15922](https://github.com/EtienneLescot/n8n-as-code/commit/db1592203d001e35d86decf3f72dee2abe8e0862))
+* **cli:** resolve review feedback on folder-login scoping and 403 license degrade ([d166bab](https://github.com/EtienneLescot/n8n-as-code/commit/d166babdb9b3308f91295301742693e298e6e1d5))
+* **cli:** remove duplicate workflowRelativePathToAbsolute declaration ([8251010](https://github.com/EtienneLescot/n8n-as-code/commit/8251010c119e0c669ab40ed3e44425d7df1d862c))
+* **cli:** update state filename on rename and prioritize disk scan ([ce2a110](https://github.com/EtienneLescot/n8n-as-code/commit/ce2a1103de1c8335effd7fab75c6925a692c8246))
+* **cli:** let uses() accept an array on single-valued AI roles ([a2cebca](https://github.com/EtienneLescot/n8n-as-code/commit/a2cebca15eb886a950528a779c56c65ff0caf6ac))
+* **cli:** exit non-zero when push encounters conflict ([46c372e](https://github.com/EtienneLescot/n8n-as-code/commit/46c372eca4ab9e7cfb877ac69584c8ec6c80380e))
+* **transformer:** persist disabled, notes and notesInFlow through workflow round-trip ([904951b](https://github.com/EtienneLescot/n8n-as-code/commit/904951b99c886b81a4c180270f33ecfbd8ec84bd))
+* **cli:** reconcile local state before attempting the draft re-pin ([2a0e0ab](https://github.com/EtienneLescot/n8n-as-code/commit/2a0e0ab4c1caceb0fb8a8864051052ca48fe54eb))
+* repair mojibake em-dashes, drop BOM, label code fences ([7069711](https://github.com/EtienneLescot/n8n-as-code/commit/706971154de51d2baa213975856527cc51fa5347))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/manager-adapter bumped from 2.0.5-rc.7 to 2.0.5
+    * @n8n-as-code/mcp bumped from 2.2.0-rc.7 to 2.2.0
+    * @n8n-as-code/skills bumped from 2.4.0-rc.7 to 2.4.0
+    * @n8n-as-code/transformer bumped from 2.0.1-rc.7 to 2.0.1
+    * @n8n-as-code/workflow-core bumped from 2.0.1-rc.7 to 2.0.1
+
+## [2.5.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.4.1...n8nac@v2.5.0) (2026-07-24)
+
+### Features
+
+* **cli:** make folder sync push-authoritative and API-key-only ([b873b38](https://github.com/EtienneLescot/n8n-as-code/commit/b873b38ca0a2745d4369d4a2256ccb04f4e45426))
+* **cli:** support folder-aware workflow sync ([86e6b2e](https://github.com/EtienneLescot/n8n-as-code/commit/86e6b2ee8793681a91511d308b33e61ffa4c69b8))
+* **cli:** surface drift in `n8nac list --json` ([3985903](https://github.com/EtienneLescot/n8n-as-code/commit/3985903244abe92a728e67422cd96beddbb4ff61))
+
+### Bug Fixes
+
+* **cli:** degrade folder push on n8n's generic additional-properties 400 ([9f22ed0](https://github.com/EtienneLescot/n8n-as-code/commit/9f22ed0a4de4d3d03b0c91941a941c6e7d0743cc))
+* **cli:** preserve folder assignment when pushing nested-path updates ([a48fe50](https://github.com/EtienneLescot/n8n-as-code/commit/a48fe50cbcaf7758ee0e74e8106ad87ec3702166))
+* **cli:** harden folder-aware sync against concurrent folder creation ([ebf134a](https://github.com/EtienneLescot/n8n-as-code/commit/ebf134ab2d508e62c915c1c12a4a4bcaab717da7))
+* **cli:** stop copying per-environment API keys onto the shared target ([6bd1f51](https://github.com/EtienneLescot/n8n-as-code/commit/6bd1f51938e7a85878284c21e67c2547d2c5d2af))
+* **vscode:** stop storing a workspace API key against managed targets ([ba14981](https://github.com/EtienneLescot/n8n-as-code/commit/ba14981eadfcb8de4c970575e56b64a19c0fead5))
+* **cli:** drop an environment API key when it moves to another instance ([62ec7d6](https://github.com/EtienneLescot/n8n-as-code/commit/62ec7d663664e997e003caae33b83634fe892fe3))
+* **cli:** keep workspace API keys off managed instance environments ([a508a2d](https://github.com/EtienneLescot/n8n-as-code/commit/a508a2da87da3393d2f9bfbc0136b26e716e8f64))
+* **cli:** bind n8n API keys to environments instead of shared URL targets ([6dd92bc](https://github.com/EtienneLescot/n8n-as-code/commit/6dd92bc29bf8f5b63c60a5f0c1bcb7a136e3ccb9))
+* **cli:** make certificate trust failures actionable ([2e588b5](https://github.com/EtienneLescot/n8n-as-code/commit/2e588b5f051d1b64fe0de68eba671074fc717139))
+* **cli:** verify server certificates on public hosts by default ([615f1e2](https://github.com/EtienneLescot/n8n-as-code/commit/615f1e285fc9df464700b6c7dddbbbe3848a535b))
+* **vscode:** trust extra CAs on the fetch path and keep self-signed working ([bcd41af](https://github.com/EtienneLescot/n8n-as-code/commit/bcd41af1ed17c03f03d9034053e9598d2df4142a))
+* respect NODE_EXTRA_CA_CERTS and system CAs in HTTPS agent ([ad814b2](https://github.com/EtienneLescot/n8n-as-code/commit/ad814b20e912d5d62b2b08970d2096f95d20b87f))
+* **cli:** omit drift.remote when the instance reports no updatedAt ([2ee74d9](https://github.com/EtienneLescot/n8n-as-code/commit/2ee74d95ae401cbccf9638f38637a8ef6b359502))
+* **cli:** align drift docs with implementation, cover missing remote timestamp ([9745147](https://github.com/EtienneLescot/n8n-as-code/commit/974514738dc1c2f4f526f406555f3f1315345ade))
+
+### Documentation
+
+* **cli:** document the folder-sync surface and test cleanForPush ([03f52b1](https://github.com/EtienneLescot/n8n-as-code/commit/03f52b106effe83646b6aabdb5a0d5a79770d7c4))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/mcp bumped from 2.1.1 to 2.1.2
+    * @n8n-as-code/skills bumped from 2.3.1 to 2.3.2
+
+## [2.4.1](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.4.0...n8nac@v2.4.1) (2026-07-15)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/mcp bumped from 2.1.0 to 2.1.1
+    * @n8n-as-code/skills bumped from 2.3.0 to 2.3.1
+
 ## [2.4.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.6...n8nac@v2.4.0) (2026-06-09)
 
 ### Features

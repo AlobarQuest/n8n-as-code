@@ -2,9 +2,13 @@ import { ConfigService } from 'n8nac';
 
 export type NativeMcpMode = 'off' | 'assist' | 'direct';
 
+/** Native MCP usage level — cumulative ladder (0 = off). */
+export type NativeMcpLevel = 0 | 1 | 2 | 3;
+
 export interface NativeMcpConfig {
     enabled: boolean;
     mode: NativeMcpMode;
+    level: NativeMcpLevel;
     endpoint?: string;
     token?: string;
     timeoutMs: number;
@@ -21,6 +25,7 @@ export interface RedactedNativeMcpConfig {
     enabled: boolean;
     configured: boolean;
     mode: NativeMcpMode;
+    level: NativeMcpLevel;
     endpoint?: string;
     tokenConfigured: boolean;
     timeoutMs: number;
@@ -39,6 +44,7 @@ export interface NativeMcpWorkspaceConfigInput {
     enabled?: boolean;
     url?: string;
     mode?: 'assist' | 'direct';
+    level?: NativeMcpLevel;
     timeoutMs?: number;
     allowRemoteExposure?: boolean;
     allowExecutionData?: boolean;
@@ -122,6 +128,25 @@ function redactEndpoint(endpoint: string | undefined): string | undefined {
     }
 }
 
+function parseStrictLevel(value: string | undefined, min: number, max: number): number | undefined {
+    const cleaned = clean(value);
+    if (cleaned === undefined || !/^\d+$/.test(cleaned)) return undefined;
+    const parsed = Number.parseInt(cleaned, 10);
+    if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) return undefined;
+    return parsed;
+}
+
+function parseLevel(value: string | undefined, workspaceLevel: NativeMcpLevel | undefined, enabled: boolean): NativeMcpLevel {
+    // An explicit env level always wins — including 0, which acts as an
+    // explicit disabled override and must survive normalization.
+    const explicit = parseStrictLevel(value, 0, 3);
+    if (explicit !== undefined) return explicit as NativeMcpLevel;
+    if (!enabled) return 0;
+    if (workspaceLevel === 1 || workspaceLevel === 2 || workspaceLevel === 3) return workspaceLevel;
+    // Legacy configuration (no explicit level): keep the full legacy assist surface.
+    return 3;
+}
+
 export function loadNativeMcpConfig(env: NodeJS.ProcessEnv = process.env, options: LoadNativeMcpConfigOptions = {}): NativeMcpConfig {
     const workspace = resolveWorkspaceNativeMcpConfig(env, options);
     const endpoint = clean(env.N8N_NATIVE_MCP_URL) || clean(env.N8NAC_NATIVE_MCP_URL) || clean(workspace?.url) || clean(workspace?.defaultEndpoint);
@@ -135,6 +160,7 @@ export function loadNativeMcpConfig(env: NodeJS.ProcessEnv = process.env, option
     return {
         enabled,
         mode: parseMode(env.N8NAC_NATIVE_MCP_MODE, enabled, workspaceMode),
+        level: parseLevel(env.N8NAC_NATIVE_MCP_LEVEL, workspace?.level, enabled),
         endpoint,
         token,
         timeoutMs: parsePositiveInteger(env.N8NAC_NATIVE_MCP_TIMEOUT_MS, workspace?.timeoutMs || 30_000),
@@ -153,6 +179,7 @@ export function redactNativeMcpConfig(config: NativeMcpConfig): RedactedNativeMc
         enabled: config.enabled,
         configured: Boolean(config.endpoint),
         mode: config.mode,
+        level: config.level,
         endpoint: redactEndpoint(config.endpoint),
         tokenConfigured: Boolean(config.token),
         timeoutMs: config.timeoutMs,

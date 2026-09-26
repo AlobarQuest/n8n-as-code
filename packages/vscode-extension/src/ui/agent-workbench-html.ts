@@ -2777,6 +2777,21 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
         }
 
+        let renderAllFrame = 0;
+        function scheduleRenderAll() {
+            if (renderAllFrame) return;
+            renderAllFrame = requestAnimationFrame(() => {
+                renderAllFrame = 0;
+                renderAll();
+            });
+        }
+
+        function flushScheduledRenderAll() {
+            if (!renderAllFrame) return;
+            cancelAnimationFrame(renderAllFrame);
+            renderAllFrame = 0;
+        }
+
         function renderAll() {
             if (state && Array.isArray(state.availableWorkflows)) {
                 availableWorkflowCache = state.availableWorkflows;
@@ -3020,6 +3035,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         function applyStreamEvent(event) {
             if (!state || !state.session) return;
             let entries = Array.isArray(state.session.entries) ? [...state.session.entries] : [];
+            let deferRender = false;
             if (event.type === 'start') {
                 entries = entries.filter((entry) => entry.kind !== 'context-usage');
                 state.session.contextUsage = undefined;
@@ -3045,6 +3061,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 } else {
                     entries.push({ kind: 'assistant-body', id: crypto.randomUUID(), text: event.delta || '', streaming: true });
                 }
+                deferRender = true;
             } else if (event.type === 'final') {
                 entries = finalizePendingOperations(entries, 'done');
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
@@ -3067,8 +3084,10 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                     startedAt: event.startedAt,
                     endedAt: event.endedAt,
                 };
-                if (idx >= 0) entries[idx] = opEntry;
-                else insertBeforeFinalAssistant(entries, opEntry);
+                const isStaleRunning = event.status === 'running' && existing && existing.status && existing.status !== 'running';
+                if (!isStaleRunning && idx >= 0) entries[idx] = opEntry;
+                else if (!isStaleRunning) insertBeforeFinalAssistant(entries, opEntry);
+                if (opEntry.status === 'running') deferRender = true;
             } else if (event.type === 'progress') {
                 const idx = findMatchingPendingOperationIndex(entries, '', event.title, event.phase || 'phase');
                 const progressEntry = {
@@ -3082,6 +3101,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 };
                 if (idx >= 0) entries[idx] = progressEntry;
                 else insertBeforeFinalAssistant(entries, progressEntry);
+                if (progressEntry.status === 'running') deferRender = true;
             } else if (event.type === 'compaction') {
                 const compactionEntry = { kind: 'compaction', id: crypto.randomUUID(), timestamp: Date.now(), event: event };
                 entries.push(compactionEntry);
@@ -3106,7 +3126,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 entries.push({ kind: 'system-notice', id: crypto.randomUUID(), text: 'Error: ' + event.error, timestamp: Date.now() });
             }
             state.session.entries = entries;
-            renderAll();
+            if (deferRender) scheduleRenderAll();
+            else {
+                flushScheduledRenderAll();
+                renderAll();
+            }
         }
 
         function sendPrompt() {

@@ -14,6 +14,7 @@ export {
 export type {
     WorkflowDecoratorMetadata,
     NodeDecoratorMetadata,
+    NodeDecoratorOptions,
     NodeProxy,
     OutputConnection,
     InputConnection,
@@ -30,6 +31,8 @@ export { WorkflowBuilder } from './compiler/index.js';
 export type {
     WorkflowAST,
     NodeAST,
+    IAstNode,
+    INodeMetadata,
     ConnectionAST,
     WorkflowMetadata,
     N8nWorkflow,
@@ -40,6 +43,11 @@ export type {
     ValidationResult,
     ValidationError,
     ValidationWarning
+} from './types.js';
+
+export {
+    KNOWN_NODE_METADATA_KEYS,
+    INTERNAL_AST_NODE_KEYS
 } from './types.js';
 
 // Utilities

@@ -65,21 +65,25 @@ n8nac skills search "database" --type node
 n8nac skills search "ai" --category advanced-ai
 ```
 
-### `node-info <nodeName>` - 📚 Complete Node Info
-Get full node information: schema + documentation + examples.
+### `node-info <nodeName...>` - 📚 Complete Node Info
+Get full node information: schema + documentation + examples. Accepts several nodes at once.
 
 ```bash
 n8nac skills node-info googleSheets
-n8nac skills node-info httpRequest
+n8nac skills node-info gmail googleCalendar agent
+
+# --compact: essential parameters only, no interface dump (token-efficient)
+n8nac skills node-info gmail googleCalendar --compact
 ```
 
 **Includes hints for next steps!**
 
-### `node-schema <nodeName>` - ⚡ Quick Parameter Reference
-Fast access to technical schema (parameters only).
+### `node-schema <nodeName...>` - ⚡ Quick Parameter Reference
+Fast access to technical schema (parameters only). Accepts several nodes at once.
 
 ```bash
 n8nac skills node-schema googleSheets
+n8nac skills node-schema gmail httpRequest --compact
 # Returns only properties and required fields
 ```
 
@@ -250,7 +254,13 @@ path, the selected custom nodes file, and the merged node counts. If you're chec
 custom node, `npx n8nac skills node-info <nodeName> --debug` is the most direct verification.
 
 A minimal schema (`"properties": []`) is enough to suppress errors and skip parameter
-validation. Full property definitions enable parameter validation just like official nodes.
+validation: with no declared properties the validator has nothing to check parameters
+against, so it reports neither missing nor unknown ones. Full property definitions enable
+parameter validation just like official nodes.
+
+Entries may be keyed by short name (`code`) or by full type
+(`@n8n/n8n-nodes-langchain.code`). Use the full type when two packages share a short name,
+so the override applies to that node only.
 
 ### Non-default path
 

@@ -1,9 +1,94 @@
-import { N8nApiClient, IN8nCredentials } from '../core/index.js';
+import { N8nApiClient, IN8nCredentials, isCertificateTrustError, CERTIFICATE_TRUST_HINT_CLI } from '../core/index.js';
 import chalk from 'chalk';
 import { ConfigService, type IResolvedWorkspaceEnvironment } from '../services/config-service.js';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+
+/**
+ * The most useful text an error carries: the remote message and status when the request
+ * reached n8n, otherwise the transport error.
+ *
+ * Exported as a free function so commands that report through `ora` rather than
+ * {@link BaseCommand.exitWithError} share one implementation, and so it is directly testable.
+ */
+export function formatErrorDetails(error: unknown): string {
+    if (error && typeof error === 'object') {
+        const response = (error as any).response;
+        const status = response?.status;
+        const responseData = response?.data;
+
+        let remoteMessage = '';
+        if (typeof responseData?.message === 'string' && responseData.message.trim().length > 0) {
+            remoteMessage = responseData.message.trim();
+        } else if (typeof responseData === 'string' && responseData.trim().length > 0) {
+            remoteMessage = responseData.trim();
+        } else if (responseData && typeof responseData === 'object') {
+            remoteMessage = JSON.stringify(responseData);
+        }
+
+        if (status && remoteMessage) {
+            return `HTTP ${status}: ${remoteMessage}`;
+        }
+        if (remoteMessage) {
+            return remoteMessage;
+        }
+        if (status) {
+            return `HTTP ${status}`;
+        }
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return String(error);
+}
+
+/**
+ * `"<what failed>: <details>"`, with certificate-trust guidance appended when the failure is a
+ * TLS trust problem.
+ *
+ * Every command that talks to the n8n API should report through this. Node's bare
+ * "unable to verify the first certificate" tells a user nothing about which knob to reach for,
+ * and tightened verification for public hosts means more of them now meet it legitimately.
+ *
+ * The hint goes on its own line so the first line stays greppable and unchanged.
+ */
+export function formatConnectionError(message: string, error?: unknown): string {
+    const details = error === undefined ? '' : formatErrorDetails(error);
+    // `SyncManager` emits errors that already embed the caller's own label
+    // ("Failed to fetch workflow X: ..."), so prefixing again would say it twice.
+    const base = !details ? message
+        : details.startsWith(message) ? details
+        : `${message}: ${details}`;
+    return isCertificateTrustError(error) ? `${base}\n${CERTIFICATE_TRUST_HINT_CLI}` : base;
+}
+
+/** The part of `EventEmitter` this helper needs, so tests can pass a stub. */
+export interface IErrorEmitter {
+    on(event: 'error', listener: (error: Error) => void): unknown;
+}
+
+/**
+ * Record errors a `SyncManager` emits, and return an accessor for the most recent one.
+ *
+ * `SyncManager` reports a failed remote call by emitting `error` and returning a falsy result
+ * rather than rethrowing. Two consequences, both of which this fixes:
+ *
+ * 1. With no `error` listener, Node escalates the event into an uncaught exception, so the
+ *    command dies with a raw stack trace before its own `catch` can format anything.
+ * 2. The falsy return is indistinguishable from a legitimate "not found", so a transport or
+ *    TLS failure would otherwise be reported as a missing workflow.
+ *
+ * Callers pass the captured error to {@link formatConnectionError} in preference to whatever
+ * the promise rejected with, because the emitted one carries the real cause.
+ */
+export function captureEmittedErrors(emitter: IErrorEmitter): () => Error | undefined {
+    let last: Error | undefined;
+    emitter.on('error', (error: Error) => { last = error; });
+    return () => last;
+}
 
 export class BaseCommand {
     protected client: N8nApiClient;
@@ -23,6 +108,8 @@ export class BaseCommand {
         let apiKey: string;
         let directory: string;
         let folderSync: boolean;
+        let folderSyncMoveToRoot: boolean;
+
         // If --env <name> was passed as a global option, resolve that workspace
         // environment; otherwise use the V4 active environment.
         const requestedEnvironment = process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
@@ -50,6 +137,7 @@ export class BaseCommand {
         }
         directory = resolvedEnvironment.workflowsPath;
         folderSync = resolvedEnvironment.folderSync ?? false;
+        folderSyncMoveToRoot = resolvedEnvironment.folderSyncMoveToRoot ?? false;
         this.instanceIdentifier = resolvedEnvironment.instanceIdentifier || null;
         this.instanceUserIdentifier = resolvedEnvironment.instanceUserIdentifier || null;
 
@@ -61,6 +149,7 @@ export class BaseCommand {
             host,
             apiKeyConfigured: Boolean(apiKey),
             folderSync,
+            folderSyncMoveToRoot,
         };
         this.runtimePrepared = false;
 
@@ -80,7 +169,10 @@ export class BaseCommand {
     }
 
     private tryResolveEnvironment(environmentNameOrId?: string): IResolvedWorkspaceEnvironment | undefined {
-        if (!this.configService.isWorkspaceConfigV4()) {
+        // Not `isWorkspaceConfigV4()`: a workspace `.env` resolves an environment with no
+        // config file on disk, and gating on the file alone left `list`/`pull`/`push`
+        // reporting an unconfigured CLI for a workspace that was in fact usable.
+        if (!this.configService.hasResolvableEnvironment()) {
             return undefined;
         }
         try {
@@ -110,6 +202,93 @@ export class BaseCommand {
         }
         this.instanceIdentifier = await this.configService.getOrCreateInstanceIdentifier(this.config.host, this.activeInstanceId);
         return this.instanceIdentifier;
+    }
+
+    /**
+     * Resolve optional session auth for reading n8n folders over the internal
+     * `/rest` API. folderSync needs it wherever the public workflow API omits a
+     * workflow's folder ownership — which is every edition today — so `pull` can
+     * rebuild the nested layout. Entirely opt-in: with nothing configured this
+     * returns undefined and the public (flat) path is used, unchanged.
+     *
+     * Candidate cookies are tried in order — the stored per-target token (from
+     * `n8nac env auth folder-login`) first, then an env token — and `user`/`pass`
+     * mint a fresh cookie when none works. Env vars are never committed:
+     *   N8NAC_ENV_<ENV>_FOLDER_USER / _FOLDER_PASS   (per-environment creds)
+     *   N8NAC_ENV_<ENV>_FOLDER_TOKEN                 (per-environment cookie/jwt)
+     *   N8NAC_FOLDER_LOGIN_USER / _PASS / _TOKEN     (generic fallback)
+     */
+    protected resolveFolderAuth(): { cookies?: string[]; user?: string; pass?: string } | undefined {
+        const clean = (v?: string) => v?.trim().replace(/^['"]|['"]$/g, '') || '';
+        const slugify = (v?: string) =>
+            (v || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const slugs = [
+            this.activeEnvironment?.environmentName,
+            this.activeEnvironment?.environmentId,
+        ].map(slugify).filter(Boolean);
+
+        let user = '';
+        let pass = '';
+        let envToken = '';
+        for (const slug of slugs) {
+            const scopedUser = clean(process.env[`N8NAC_ENV_${slug}_FOLDER_USER`]);
+            const scopedPass = clean(process.env[`N8NAC_ENV_${slug}_FOLDER_PASS`]);
+            if (!user && !pass && scopedUser && scopedPass) {
+                user = scopedUser;
+                pass = scopedPass;
+            }
+            envToken = envToken || clean(process.env[`N8NAC_ENV_${slug}_FOLDER_TOKEN`]);
+        }
+        const genericUser = clean(process.env.N8NAC_FOLDER_LOGIN_USER);
+        const genericPass = clean(process.env.N8NAC_FOLDER_LOGIN_PASS);
+        if (!user && !pass && genericUser && genericPass) {
+            user = genericUser;
+            pass = genericPass;
+        }
+        envToken = envToken || clean(process.env.N8NAC_FOLDER_LOGIN_TOKEN);
+
+        // Accept a bare JWT by adding the cookie name.
+        const asCookie = (v: string) => (v && !v.includes('=') ? `n8n-auth=${v}` : v);
+
+        const cookies: string[] = [];
+        // Stored per-target token first (skips a login round-trip), if unexpired.
+        const targetId = this.activeEnvironment?.environmentTargetId;
+        if (targetId) {
+            const session = this.configService.getFolderSession(targetId);
+            if (session?.cookie && (!session.expiresAt || Date.parse(session.expiresAt) > Date.now())) {
+                cookies.push(asCookie(session.cookie));
+            }
+        }
+        // Env token as a fallback candidate — used if the stored cookie is revoked.
+        if (envToken) cookies.push(asCookie(envToken));
+        const uniqueCookies = cookies.filter((c, i) => c && cookies.indexOf(c) === i);
+
+        if (uniqueCookies.length === 0 && !(user && pass)) return undefined;
+        return {
+            cookies: uniqueCookies.length ? uniqueCookies : undefined,
+            user: user || undefined,
+            pass: pass || undefined,
+        };
+    }
+
+    /**
+     * Whether a configured session folder source that fails to load may degrade to
+     * a flat pull (with a warning) instead of failing closed. Off by default; opt in
+     * with N8NAC_ENV_<ENV>_FOLDER_ALLOW_FLAT or N8NAC_FOLDER_ALLOW_FLAT_FALLBACK.
+     */
+    protected resolveFolderSessionAllowFlatFallback(): boolean {
+        const truthy = (v?: string) => /^(1|true|yes|on)$/i.test((v || '').trim());
+        const slugify = (v?: string) =>
+            (v || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const slugs = [
+            this.activeEnvironment?.environmentName,
+            this.activeEnvironment?.environmentId,
+        ].map(slugify).filter(Boolean);
+        for (const slug of slugs) {
+            const perEnv = process.env[`N8NAC_ENV_${slug}_FOLDER_ALLOW_FLAT`];
+            if (perEnv !== undefined) return truthy(perEnv);
+        }
+        return truthy(process.env.N8NAC_FOLDER_ALLOW_FLAT_FALLBACK);
     }
 
     /**
@@ -148,6 +327,10 @@ export class BaseCommand {
             projectId: localConfig.projectId,
             projectName: localConfig.projectName,
             folderSync: localConfig.folderSync ?? false,
+            folderSyncMoveToRoot: localConfig.folderSyncMoveToRoot ?? false,
+            host: this.config.host,
+            folderAuth: this.resolveFolderAuth(),
+            folderSessionAllowFlatFallback: this.resolveFolderSessionAllowFlatFallback(),
             environmentId: this.activeEnvironment?.environmentId,
             environmentName: this.activeEnvironment?.environmentName,
             environmentTargetId: this.activeEnvironment?.environmentTargetId,
@@ -184,6 +367,7 @@ export class BaseCommand {
                 host: context.host,
                 apiKeyConfigured: true,
                 folderSync: context.folderSync ?? false,
+                folderSyncMoveToRoot: (context as any).folderSyncMoveToRoot ?? false,
             };
             this.runtimePrepared = true;
         } catch (error) {
@@ -195,46 +379,13 @@ export class BaseCommand {
         }
     }
 
+    /** Kept as a method for subclasses that already call it; the logic lives in the free function. */
     protected formatErrorDetails(error: unknown): string {
-        if (error && typeof error === 'object') {
-            const response = (error as any).response;
-            const status = response?.status;
-            const responseData = response?.data;
-
-            let remoteMessage = '';
-            if (typeof responseData?.message === 'string' && responseData.message.trim().length > 0) {
-                remoteMessage = responseData.message.trim();
-            } else if (typeof responseData === 'string' && responseData.trim().length > 0) {
-                remoteMessage = responseData.trim();
-            } else if (responseData && typeof responseData === 'object') {
-                remoteMessage = JSON.stringify(responseData);
-            }
-
-            if (status && remoteMessage) {
-                return `HTTP ${status}: ${remoteMessage}`;
-            }
-            if (remoteMessage) {
-                return remoteMessage;
-            }
-            if (status) {
-                return `HTTP ${status}`;
-            }
-        }
-
-        if (error instanceof Error) {
-            return error.message;
-        }
-
-        return String(error);
+        return formatErrorDetails(error);
     }
 
     protected exitWithError(message: string, error?: unknown): never {
-        if (error !== undefined) {
-            const details = this.formatErrorDetails(error);
-            console.error(chalk.red(`❌ ${message}: ${details}`));
-        } else {
-            console.error(chalk.red(`❌ ${message}`));
-        }
+        console.error(chalk.red(`❌ ${formatConnectionError(message, error)}`));
         process.exit(1);
     }
 }

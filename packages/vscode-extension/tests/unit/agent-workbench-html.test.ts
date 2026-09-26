@@ -485,6 +485,10 @@ test('CLI skills assets: extension bundles only runtime-required agent assets', 
     const ensureExtensionAssetsSource = fs.readFileSync(path.join(__dirname, '../../../../scripts/ensure-extension-skills-assets.cjs'), 'utf8');
     const cliSource = fs.readFileSync(path.join(__dirname, '../../../cli/src/index.ts'), 'utf8');
     const skillsCliSource = fs.readFileSync(path.join(__dirname, '../../../skills/src/cli.ts'), 'utf8');
+    // The skills CLI delegates asset resolution to a shared module so the MCP server and the
+    // extension resolve assets identically. Assert on that module, and on the delegation, so
+    // this guard follows the logic instead of pinning it to one file.
+    const skillsAssetsSource = fs.readFileSync(path.join(__dirname, '../../../skills/src/services/assets-dir.ts'), 'utf8');
 
     assert.ok(rootPackage.scripts['build:extension'].includes('ensure-extension-skills-assets.cjs'), 'Extension build must verify agent skills before bundling');
     assert.ok(ensureExtensionAssetsSource.includes('hasRequiredAgentSkills'), 'Extension build preflight must verify agent skills before bundling');
@@ -500,8 +504,9 @@ test('CLI skills assets: extension bundles only runtime-required agent assets', 
     assert.ok(!extensionBuildSource.includes('skills assets not found; run `npm run build:extension`'), 'Extension bundler must not fail on missing generated skills JSON assets');
     assert.ok(cliSource.includes('hasRequiredAssets'), 'CLI must verify skills asset directories before selecting them');
     assert.ok(cliSource.includes("'vscode-extension', 'assets'"), 'CLI dev fallback should find extension-bundled assets');
-    assert.ok(skillsCliSource.includes('hasRequiredAssets'), 'Direct skills CLI must verify skills asset directories before selecting them');
-    assert.ok(skillsCliSource.includes('vscode-extension/assets'), 'Direct skills CLI dev fallback should find extension-bundled assets');
+    assert.ok(skillsCliSource.includes('resolveSkillsAssetsDir'), 'Direct skills CLI must resolve assets through the shared resolver');
+    assert.ok(skillsAssetsSource.includes('hasRequiredAssets'), 'Shared skills asset resolver must verify asset directories before selecting them');
+    assert.ok(skillsAssetsSource.includes('vscode-extension/assets'), 'Shared skills asset resolver dev fallback should find extension-bundled assets');
 });
 
 test('Agent Workbench state delivery: runtime states are lightweight and ordered', () => {
@@ -514,6 +519,26 @@ test('Agent Workbench state delivery: runtime states are lightweight and ordered
     assert.ok(source.includes('if (!nextState.isRunning)'), 'Must not enrich stale runtime snapshots while a run is active');
     assert.ok(source.includes("void this.postWorkbenchState(undefined, { enrich: true })"), 'Must refresh state before background enrichment instead of reusing a stale snapshot');
     assert.ok(source.includes('await this.postWorkbenchState(message.state, { enrich: false });'), 'Runtime state messages should use the lightweight path');
+});
+
+test('Agent Workbench streaming: text deltas are batched and rendered on animation frames', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const controller = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+    const html = fs.readFileSync(path.join(__dirname, '../../src/ui/agent-workbench-html.ts'), 'utf8');
+
+    assert.ok(controller.includes('STREAM_TEXT_FLUSH_INTERVAL_MS'), 'Runtime should define a bounded stream flush interval');
+    assert.ok(controller.includes('pendingTextDelta += streamEvent.delta'), 'Runtime should coalesce text deltas before posting to the webview');
+    assert.ok(controller.includes('await flushPendingTextDelta();'), 'Runtime must flush text before non-text events and final output');
+    assert.ok(controller.includes("const delta = pendingTextDelta;\n            pendingTextDelta = '';\n            if (!delta) {\n                await textFlushChain;\n                return;\n            }\n            const flush = async () =>"), 'Runtime should snapshot buffered text and await in-flight flushes before non-text events');
+    assert.ok(controller.includes('streamClosed = true;'), 'Runtime should close the stream before cleanup');
+    assert.ok(controller.includes('clearTimeout(pendingTextFlushTimer);'), 'Runtime cleanup should cancel pending text flush timers');
+    assert.ok(controller.includes("pendingTextDelta = '';"), 'Aborted runs should drop buffered text before leaving cleanup');
+    assert.ok(html.includes('function scheduleRenderAll()'), 'Workbench webview should batch streaming renders');
+    assert.ok(html.includes('function flushScheduledRenderAll()'), 'Immediate workbench renders should cancel scheduled frames');
+    assert.ok(html.includes('cancelAnimationFrame(renderAllFrame);'), 'Scheduled render frames should be cancellable');
+    assert.ok(html.includes('requestAnimationFrame(() =>'), 'Streaming renders should align with browser frames');
+    assert.ok(html.includes('if (deferRender) scheduleRenderAll();'), 'Text-delta events should defer full feed rendering');
 });
 
 test('Agent Workbench webview: conversation deletion is confirmed and cleans panel ownership', () => {
@@ -543,9 +568,13 @@ test('Agent Workbench webview: workflow menu options preserve local file paths',
     const fs = require('node:fs');
     const path = require('node:path');
     const source = fs.readFileSync(path.join(__dirname, '../../src/ui/agent-workbench-webview.ts'), 'utf8');
+    const extensionSource = fs.readFileSync(path.join(__dirname, '../../src/extension.ts'), 'utf8');
 
-    assert.ok(source.includes('resolveWorkflow(base)'), 'Available workflows should resolve their local file targets');
-    assert.ok(source.includes('filePath: target?.workflowFilePath'), 'Available workflow options must include local file paths');
+    assert.ok(source.includes('listWorkflowOptions()'), 'Available workflow options should be provided as a lightweight list');
+    assert.ok(!source.includes('resolveWorkflow(base)'), 'Available workflows must not resolve every workflow target from the menu path');
+    assert.ok(extensionSource.includes('function listAgentWorkflowContextOptions'), 'Extension host must build lightweight workflow menu options');
+    assert.ok(extensionSource.includes('filePath: getExistingWorkflowFileUri(workflow)?.fsPath'), 'Available workflow options must include local file paths');
+    assert.ok(!extensionSource.includes('const workflows = await listAgentWorkflowOptions();\n    const workflow = workflows.find'), 'Resolving one workflow must not refresh the full remote workflow list');
     assert.ok(source.includes('workflowFilename: this._workflow?.filename'), 'Initial HTML must receive the current workflow filename');
     assert.ok(source.includes('workflowFilePath: this._workflowFilePath'), 'Initial HTML must receive the current workflow file path');
     assert.ok(source.includes("workflowFilename: workflow?.filename || ''"), 'Workflow update messages must preserve filename');
@@ -689,4 +718,48 @@ test('Agent Workbench HTML: handles panel.visibility to unload/reload iframe', (
     assert.ok(html.includes("message.type === 'panel.visibility'"), 'Must handle panel.visibility messages');
     assert.ok(html.includes("frame.src = 'about:blank'"), 'Must set frame.src to about:blank when hidden');
     assert.ok(html.includes("frame.src = workflowUrl"), 'Must restore original workflowUrl when visible');
+});
+
+test('Agent runtime: running operation deltas are coalesced before reaching the webview', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+
+    assert.ok(source.includes('STREAM_OPERATION_FLUSH_INTERVAL_MS'), 'Runtime should define a bounded operation flush interval');
+    assert.ok(source.includes('pendingOperationEvents'), 'Runtime should coalesce running operation events per operation');
+    assert.ok(source.includes("streamEvent.type === 'operation' && streamEvent.status === 'running'"), 'Only running operations should be deferred; terminal states stay immediate');
+    assert.ok(source.includes('scheduleOperationFlush()'), 'Deferred operations should flush on a timer');
+    const flushCount = (source.match(/await flushPendingOperationsNow\(\);/g) || []).length;
+    assert.ok(flushCount >= 2, 'Terminal events and the final response must flush deferred operations first');
+    assert.ok(source.includes('pendingOperationEvents = new Map();'), 'Aborted runs should drop buffered operations');
+});
+
+test('Agent Workbench HTML: running operations defer full feed rendering', () => {
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(html.includes("if (opEntry.status === 'running') deferRender = true;"), 'Running operation updates must defer full feed rendering');
+    assert.ok(html.includes("if (progressEntry.status === 'running') deferRender = true;"), 'Running progress updates must defer full feed rendering');
+});
+
+test('Agent runtime: stale running events cannot reopen terminal operations', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const controller = fs.readFileSync(path.join(__dirname, '../../src/services/agent-runtime-controller.ts'), 'utf8');
+    const { buildAgentWorkbenchHtml } = require('../../src/ui/agent-workbench-html.js');
+    const html: string = buildAgentWorkbenchHtml({
+        workflowId: 'wf-1',
+        workflowName: 'Workflow 1',
+        workflowUrl: 'http://localhost:5678/workflow/wf-1',
+        providerModelLabel: 'openai / gpt-5.4',
+    });
+
+    assert.ok(controller.includes('if (signal.aborted) break;'), 'Aborted runs should drop buffered operations instead of emitting them');
+    assert.ok(controller.includes("existingEntry.status !== 'running'"), 'Host entries must reject running updates for terminal operations');
+    assert.ok(html.includes('isStaleRunning'), 'Webview must reject running updates for terminal operations');
 });
