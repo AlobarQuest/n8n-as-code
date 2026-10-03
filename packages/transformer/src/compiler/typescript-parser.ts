@@ -6,7 +6,7 @@
  */
 
 import { Project, SourceFile, SyntaxKind, ClassDeclaration, PropertyDeclaration, MethodDeclaration, Node } from 'ts-morph';
-import { WorkflowAST, NodeAST, ConnectionAST, WorkflowMetadata } from '../types.js';
+import { WorkflowAST, NodeAST, ConnectionAST, WorkflowMetadata, AI_ARRAY_ROLES, KNOWN_NODE_METADATA_KEYS } from '../types.js';
 
 /**
  * Parse TypeScript workflow file
@@ -165,6 +165,16 @@ export class TypeScriptParser {
             const initializer = prop.getInitializer();
             const parameters = initializer ? this.extractValueFromASTNode(initializer) : {};
             
+            const handledMetadataKeys = new Set<string>(KNOWN_NODE_METADATA_KEYS);
+            const extraMetadata: Record<string, any> = {};
+            if (metadata && typeof metadata === 'object') {
+                for (const [key, value] of Object.entries(metadata)) {
+                    if (!handledMetadataKeys.has(key) && value !== undefined) {
+                        extraMetadata[key] = value;
+                    }
+                }
+            }
+
             nodes.push({
                 propertyName,
                 ...(metadata.id && { id: metadata.id }),
@@ -180,6 +190,11 @@ export class TypeScriptParser {
                 ...(metadata.retryOnFail !== undefined && { retryOnFail: metadata.retryOnFail }),
                 ...(metadata.maxTries !== undefined && { maxTries: metadata.maxTries }),
                 ...(metadata.waitBetweenTries !== undefined && { waitBetweenTries: metadata.waitBetweenTries }),
+                ...(metadata.disabled !== undefined && { disabled: metadata.disabled }),
+                ...(metadata.notes !== undefined && { notes: metadata.notes }),
+                ...(metadata.notesInFlow !== undefined && { notesInFlow: metadata.notesInFlow }),
+                ...(metadata.continueOnFail !== undefined && { continueOnFail: metadata.continueOnFail }),
+                ...extraMetadata,
                 parameters
                 // aiDependencies will be added by extractAIDependencies()
             });
@@ -332,12 +347,15 @@ export class TypeScriptParser {
             const key = trimmed.substring(0, colonIndex).trim();
             const value = trimmed.substring(colonIndex + 1).trim();
             
-            // Check if it's an array type (ai_tool or ai_document)
-            if ((key === 'ai_tool' || key === 'ai_document') && value.startsWith('[')) {
+            // Arrays are allowed on every role: fan-in for ai_tool/ai_document,
+            // one entry per input index for the rest (fallback model, model selector).
+            if (value.startsWith('[')) {
                 // Parse array: [this.Tool1.output, this.Tool2.output]
                 const itemNames = this.parseToolArray(value);
-                if (itemNames.length > 0) {
+                if (itemNames.length > 1 || (itemNames.length === 1 && AI_ARRAY_ROLES.includes(key as any))) {
                     result[key] = itemNames;
+                } else if (itemNames.length === 1) {
+                    result[key] = itemNames[0];
                 }
             } else {
                 // Parse single reference: this.NodeName.output
@@ -380,27 +398,33 @@ export class TypeScriptParser {
     }
     
     /**
-     * Parse tool array
-     * 
+     * Parse an AI sub-node array
+     *
      * Input: "[this.Tool1.output, this.Tool2.output]"
      * Output: ["Tool1", "Tool2"]
+     *
+     * Positions are preserved, so an elision keeps the following entries on their
+     * own input index: "[, this.Fallback.output]" → ["", "Fallback"].
      */
     private parseToolArray(arrayText: string): string[] {
         const result: string[] = [];
-        
+
         // Remove brackets
         const content = arrayText.replace(/^\[|\]$/g, '').trim();
-        
+
         // Split by comma
         const items = content.split(',');
-        
+
         for (const item of items) {
             const nodeMatch = item.trim().match(TypeScriptParser.OUTPUT_REF_PATTERN);
-            if (nodeMatch) {
-                result.push(nodeMatch[1]);
-            }
+            result.push(nodeMatch ? nodeMatch[1] : '');
         }
-        
+
+        // Drop trailing empties (trailing comma, empty array)
+        while (result.length > 0 && !result[result.length - 1]) {
+            result.pop();
+        }
+
         return result;
     }
     
@@ -459,6 +483,7 @@ export class TypeScriptParser {
      * literals, array literals, no-substitution template literals, and
      * negative number literals.
      *
+     * Concatenation of string/number literals with `+` is constant-folded.
      * For any other expression (function calls, identifiers, template
      * expressions with substitutions, etc.) a clear error is thrown.
      * The parser is intentionally static — the workflow file is TypeScript
@@ -498,6 +523,35 @@ export class TypeScriptParser {
                     `[n8n-as-code] Cannot statically evaluate prefix expression ` +
                     `"${node.getText()}" in a node parameter. ` +
                     `Only literal values are supported.`
+                );
+            }
+
+            // ── Parenthesized expressions  (('a' + 'b')) ─────────────────
+            case SyntaxKind.ParenthesizedExpression:
+                return this.extractValueFromASTNode((node as any).getExpression());
+
+            // ── Literal concatenation  ('long ' + 'prompt') ──────────────
+            // Splitting a long system prompt across lines with `+` is the natural
+            // way to write one; both operands are constants, so fold them here
+            // instead of making the author reach for a template literal.
+            case SyntaxKind.BinaryExpression: {
+                const binary = node as any;
+                if (binary.getOperatorToken().getKind() === SyntaxKind.PlusToken) {
+                    const left = this.extractValueFromASTNode(binary.getLeft());
+                    const right = this.extractValueFromASTNode(binary.getRight());
+                    const isFoldable = (value: unknown) =>
+                        typeof value === 'string' || typeof value === 'number';
+                    if (isFoldable(left) && isFoldable(right)) {
+                        return typeof left === 'number' && typeof right === 'number'
+                            ? left + right
+                            : `${left}${right}`;
+                    }
+                }
+                throw new Error(
+                    `[n8n-as-code] Cannot statically evaluate expression ` +
+                    `"${node.getText().substring(0, 80)}" in a node parameter.\n` +
+                    `Only literal values, and concatenation of string or number ` +
+                    `literals with \`+\`, are supported.`
                 );
             }
 

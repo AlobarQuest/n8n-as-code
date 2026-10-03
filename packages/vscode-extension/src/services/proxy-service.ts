@@ -18,6 +18,28 @@ type ExternalAuthSession = {
     expectedTargetUrl: string;
 };
 
+function isLoopbackTarget(targetUrl?: string): boolean {
+    if (!targetUrl) return false;
+    try {
+        const u = new URL(targetUrl);
+        const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+        return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0';
+    } catch {
+        return false;
+    }
+}
+
+function shouldVerifyTargetTls(targetUrl?: string): boolean {
+    if (!targetUrl) return true;
+    try {
+        const u = new URL(targetUrl);
+        if (u.protocol !== 'https:') return false;
+        return !/^(0|false|no)$/i.test(process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? '1');
+    } catch {
+        return true;
+    }
+}
+
 export class ProxyService {
     private server: http.Server | undefined;
     private proxy: HttpProxyServer | undefined;
@@ -346,13 +368,42 @@ export class ProxyService {
         res.setHeader('access-control-allow-origin', '*');
         res.setHeader('access-control-allow-credentials', 'true');
 
+        // CWE-522: Strip n8n session cookies before forwarding requests to external IdP
+        if (req.headers['cookie']) {
+            const clientCookies = Array.isArray(req.headers['cookie'])
+                ? req.headers['cookie'].join('; ')
+                : req.headers['cookie'];
+            const filteredCookies = clientCookies
+                .split(';')
+                .map((c) => c.trim())
+                .filter((c) => !c.startsWith('n8n-auth='))
+                .join('; ');
+            if (filteredCookies) {
+                req.headers['cookie'] = filteredCookies;
+            } else {
+                delete req.headers['cookie'];
+            }
+        }
+
         this.proxy.web(req, res, {
             target: targetUrl.origin,
             changeOrigin: true,
-            secure: false,
+            secure: shouldVerifyTargetTls(targetUrl.origin),
             buffer: undefined,
         });
         return true;
+    }
+
+    private isTargetAllowedForCredentialForwarding(): boolean {
+        if (!this.target) return false;
+        try {
+            const u = new URL(this.target);
+            if (u.protocol === 'https:') return true;
+            if (u.protocol === 'http:' && isLoopbackTarget(this.target)) return true;
+            return false;
+        } catch {
+            return false;
+        }
     }
 
     private async saveCookies() {
@@ -366,6 +417,16 @@ export class ProxyService {
         }
     }
 
+    public async setSessionToken(token: string): Promise<void> {
+        if (this.target && !this.isTargetAllowedForCredentialForwarding()) {
+            throw new Error('Session tokens cannot be forwarded to unencrypted remote HTTP targets. Use HTTPS or a loopback address.');
+        }
+        const cleanToken = token.trim();
+        this.cookieJar.set('n8n-auth', `n8n-auth=${cleanToken}`);
+        await this.saveCookies();
+        this.log(`[Proxy] Session token saved for ${this.target}`);
+    }
+
     private async loadCookies() {
         if (!this.secrets || !this.target) return;
         try {
@@ -377,6 +438,17 @@ export class ProxyService {
                 }
                 this.log(`[Proxy] Loaded ${this.cookieJar.size} persisted cookies for ${this.target}`);
             }
+            if (!this.cookieJar.has('n8n-auth') && process.env.N8NAC_FOLDER_LOGIN_TOKEN) {
+                let envToken = process.env.N8NAC_FOLDER_LOGIN_TOKEN.trim();
+                if (envToken.startsWith('n8n-auth=')) {
+                    envToken = envToken.slice('n8n-auth='.length).trim();
+                }
+                if (envToken.includes(';')) envToken = envToken.split(';')[0].trim();
+                if (envToken) {
+                    this.cookieJar.set('n8n-auth', `n8n-auth=${envToken}`);
+                    this.log(`[Proxy] Loaded n8n-auth session cookie from N8NAC_FOLDER_LOGIN_TOKEN`);
+                }
+            }
         } catch (e: any) {
             this.log(`[Proxy] Error loading persisted cookies: ${e.message}`);
         }
@@ -386,7 +458,12 @@ export class ProxyService {
         const finalCookies: string[] = clientCookies ? [clientCookies] : [];
 
         if (this.cookieJar.size > 0) {
+            const allowSensitiveCookies = this.isTargetAllowedForCredentialForwarding();
             for (const [key, value] of this.cookieJar) {
+                if (key === 'n8n-auth' && !allowSensitiveCookies) {
+                    this.log(`[Proxy] Suppressed sensitive n8n-auth cookie forwarding to unencrypted remote HTTP target: ${this.target}`);
+                    continue;
+                }
                 if (!clientCookies || !clientCookies.includes(key + '=')) {
                     finalCookies.push(value);
                 }
@@ -425,7 +502,7 @@ export class ProxyService {
         this.proxy = HttpProxy.createProxyServer({
             target: this.target,
             changeOrigin: true,
-            secure: false,
+            secure: shouldVerifyTargetTls(this.target),
             // Intercept HTML responses so we can inject the n8n UI bridge.
             selfHandleResponse: true,
             cookieDomainRewrite: "", // Rewrite all domains to match localhost
@@ -456,7 +533,7 @@ export class ProxyService {
                     const handoff = this.createExternalAuthHandoff(location, returnUrl);
                     if (handoff) {
                         const httpRes = res as http.ServerResponse;
-                        void this.openExternalUrl(handoff.authProxyUrl);
+                        void this.openExternalUrl(location);
                         proxyRes.resume();
                         httpRes.writeHead(200, {
                             'content-type': 'text/html; charset=utf-8',
@@ -612,7 +689,7 @@ export class ProxyService {
                 res.setHeader('access-control-allow-headers', '*');
 
                 // CRITICAL for SSE: Disable buffering
-                this.proxy.web(req, res, { buffer: undefined, changeOrigin: true, secure: false });
+                this.proxy.web(req, res, { buffer: undefined, changeOrigin: true, secure: shouldVerifyTargetTls(this.target) });
             }
         });
 
@@ -676,7 +753,7 @@ export class ProxyService {
                     this.wsServer.handleUpgrade(req, socket, head, (clientWs) => {
                         const upstreamWs = new WebSocket(upstreamUrl, {
                             headers,
-                            rejectUnauthorized: false,
+                            rejectUnauthorized: shouldVerifyTargetTls(this.target),
                             perMessageDeflate: false,
                         });
 
@@ -987,6 +1064,86 @@ export class ProxyService {
   }
 
   installPopupBridge();
+
+  function isSsoInitUrl(url) {
+    if (!url) return false;
+    var s = String(url);
+    return s.indexOf('/sso/saml/initsso') !== -1
+      || s.indexOf('/sso/oidc/login') !== -1
+      || s.indexOf('/rest/sso/saml/initsso') !== -1
+      || s.indexOf('/rest/sso/oidc/login') !== -1;
+  }
+
+  function handleSsoInitUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== "string") return;
+    var target = rawUrl.trim();
+    if (target.startsWith('"') && target.endsWith('"')) {
+      try { target = JSON.parse(target); } catch(e) {}
+    }
+    if (!target || (!target.startsWith("http://") && !target.startsWith("https://"))) return;
+    window.parent.postMessage({
+      type: "n8n-sso-detected",
+      idpUrl: target,
+      workflowId: String(window.location.pathname)
+    }, "*");
+    postOpenExternal(target, "_blank", "oauth", "", "sso.initsso");
+  }
+
+  function installSsoBridge() {
+    if (typeof window.fetch === "function") {
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+        if (isSsoInitUrl(url)) {
+          return origFetch.apply(this, arguments).then(function(res) {
+            if (res.ok) {
+              try {
+                var clone = res.clone();
+                return clone.text().then(function(text) {
+                  handleSsoInitUrl(text);
+                  return new Response("", { status: 200, statusText: "OK", headers: res.headers });
+                });
+              } catch(e) {}
+            }
+            return res;
+          });
+        }
+        return origFetch.apply(this, arguments);
+      };
+    }
+
+    if (typeof window.XMLHttpRequest === "function" && window.XMLHttpRequest.prototype) {
+      var origXhrOpen = window.XMLHttpRequest.prototype.open;
+      window.XMLHttpRequest.prototype.open = function(method, url) {
+        var isSso = isSsoInitUrl(url);
+        this.__n8nacIsSso = isSso;
+        if (isSso) {
+          var xhr = this;
+          var ssoHandled = false;
+          var onDone = function() {
+            if (!ssoHandled && xhr.status >= 200 && xhr.status < 300) {
+              ssoHandled = true;
+              try {
+                var text = xhr.responseText;
+                handleSsoInitUrl(text);
+              } catch(e) {}
+              try {
+                Object.defineProperty(xhr, "responseText", { value: "", configurable: true });
+                Object.defineProperty(xhr, "response", { value: "", configurable: true });
+              } catch(e) {}
+            }
+          };
+          xhr.addEventListener("readystatechange", function() {
+            if (xhr.readyState === 4) onDone();
+          }, true);
+          xhr.addEventListener("load", onDone, true);
+        }
+        return origXhrOpen.apply(this, arguments);
+      };
+    }
+  }
+
+  installSsoBridge();
 
   function coerceNode(value) {
     var record = asRecord(value);
