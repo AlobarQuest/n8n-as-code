@@ -1,5 +1,49 @@
 # @n8n-as-code/mcp
 
+## [2.2.1](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/mcp@v2.2.0...@n8n-as-code/mcp@v2.2.1) (2026-09-11)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.4.1-rc.1 to 2.4.1
+    * n8nac bumped from 2.7.0-rc.1 to 2.7.0
+
+## [2.2.0](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/mcp@v2.1.2...@n8n-as-code/mcp@v2.2.0) (2026-09-11)
+
+### Features
+
+* **levels:** level awareness in generated context, L0 disclaimers, VS Code slider ([5e69983](https://github.com/EtienneLescot/n8n-as-code/commit/5e699839775267b3ddfcb843fa47988c43280d3a))
+* **cli:** native MCP usage levels and per-instance schema overlay (L1) ([67cc38f](https://github.com/EtienneLescot/n8n-as-code/commit/67cc38f7869f212a346082a928b11df54ad71da1))
+
+### Bug Fixes
+
+* **cli,skills,mcp:** cut agent round-trips and startup cost, plus the fixes the benchmark surfaced ([34395b5](https://github.com/EtienneLescot/n8n-as-code/commit/34395b58017ca2645cd3f143aa58590393036e00))
+* **review:** overlay descriptor identity, level parsing, refresh fingerprint, fetch timeout ([1bbd2ef](https://github.com/EtienneLescot/n8n-as-code/commit/1bbd2ef35e132af2ee6dc89374d40dccfede3ac2))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.4.0-rc.7 to 2.4.0
+    * n8nac bumped from 2.6.0-rc.7 to 2.6.0
+
+## [2.1.2](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/mcp@v2.1.1...@n8n-as-code/mcp@v2.1.2) (2026-07-24)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * n8nac bumped from 2.4.1 to 2.5.0
+
+## [2.1.1](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/mcp@v2.1.0...@n8n-as-code/mcp@v2.1.1) (2026-07-15)
+
+### Bug Fixes
+
+* **skills:** restore docs categorization against current docs.n8n.io llms.txt ([409dc65](https://github.com/EtienneLescot/n8n-as-code/commit/409dc65e2dafa75e868dad1b0411ffab30740af1))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * n8nac bumped from 2.4.0 to 2.4.1
+
 ## [2.1.0](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/mcp@v2.0.15...@n8n-as-code/mcp@v2.1.0) (2026-06-09)
 
 ### Features
