@@ -1,8 +1,9 @@
-import { Command } from 'commander';
 import chalk from 'chalk';
+import { quoteShellArg } from '../utils/shell.js';
+import { findNewerPublishedVersion } from '../utils/version-check.js';
 import fs from 'fs';
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, delimiter, basename } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import {
     N8nApiClient,
@@ -10,7 +11,7 @@ import {
     WorkspaceSetupService,
 } from '../core/index.js';
 import type { AiContextGenerator as AiContextGeneratorInstance } from '@n8n-as-code/skills';
-import { ConfigService } from '../services/config-service.js';
+import { ConfigService, effectiveNativeMcpLevel } from '../services/config-service.js';
 import dotenv from 'dotenv';
 
 const N8NAC_DEV_CONFIG_FILENAMES = [
@@ -51,30 +52,83 @@ function readAgentsMdVersion(projectRoot: string): string | undefined {
     return match?.[1];
 }
 
-function quoteShellArg(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
+/** Reads the native MCP level stamp embedded in an existing AGENTS.md, or undefined if absent. */
+function readAgentsMdLevel(projectRoot: string): number | undefined {
+    const agentsMdPath = join(projectRoot, 'AGENTS.md');
+    if (!existsSync(agentsMdPath)) return undefined;
+    const content = readFileSync(agentsMdPath, 'utf8');
+    const match = content.match(/<!--\s*n8nac-mcp-level:\s*(\d+)\s*-->/);
+    if (!match) return undefined;
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
+
 
 function hasWorkspaceDevCommand(projectRoot: string): boolean {
     return N8NAC_DEV_CONFIG_FILENAMES.some((filename) => existsSync(join(projectRoot, filename)));
 }
 
-function inferLocalDevCliCommand(projectRoot: string): string | undefined {
+/**
+ * True when a plain shell resolves `n8nac` on its own.
+ * PATH entries ending in node_modules/.bin are ignored: those are injected by our own
+ * npx / npm-script invocation and will not exist in the agent's shell afterwards.
+ */
+function isN8nacOnShellPath(): boolean {
+    const extensions = process.platform === 'win32'
+        ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';')
+        : [''];
+    return (process.env.PATH || process.env.Path || '').split(delimiter).some((dir) =>
+        dir
+        && basename(dir) !== '.bin'
+        && extensions.some((ext) => existsSync(join(dir, `n8nac${ext}`))));
+}
+
+/**
+ * The monorepo entry point, when the CLI is running from a dev checkout rather than an
+ * install. Used both to emit a fast command and to stay quiet about version drift: a
+ * maintainer on a locally bumped version should not be told to update.
+ */
+function devCheckoutEntrypoint(): string | undefined {
+    const entrypoint = process.argv[1] ? resolve(process.argv[1]) : '';
+    return entrypoint
+        && !entrypoint.includes(`${join('node_modules', '')}`)
+        && entrypoint.endsWith(join('packages', 'cli', 'dist', 'index.js'))
+        && existsSync(entrypoint)
+        ? entrypoint
+        : undefined;
+}
+
+function inferFastCliCommand(projectRoot: string): string | undefined {
     if (process.env.N8NAC_COMMAND || hasWorkspaceDevCommand(projectRoot)) {
         return undefined;
     }
 
-    const entrypoint = process.argv[1] ? resolve(process.argv[1]) : '';
-    if (!entrypoint || entrypoint.includes(`${join('node_modules', '')}`)) {
+    const devEntrypoint = devCheckoutEntrypoint();
+    if (devEntrypoint) {
+        return `node ${quoteShellArg(devEntrypoint)}`;
+    }
+
+    // Prefer the installed binary: npx pays npm's own startup on every invocation.
+    return isN8nacOnShellPath() ? 'n8nac' : undefined;
+}
+
+/**
+ * Resolve the effective native MCP usage level of the active workspace
+ * environment for generated AI context. Never throws — update-ai must not
+ * fail when no environment is pinned yet.
+ */
+function resolveActiveNativeMcpLevel(projectRoot: string): { level: number; environmentName?: string } | undefined {
+    try {
+        const configService = new ConfigService(projectRoot);
+        const requested = process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
+        const resolved = configService.resolveEnvironment(requested);
+        return {
+            level: effectiveNativeMcpLevel(resolved.environment.nativeMcp, process.env.N8NAC_NATIVE_MCP_LEVEL),
+            environmentName: resolved.environmentName,
+        };
+    } catch {
         return undefined;
     }
-    if (!entrypoint.endsWith(join('packages', 'cli', 'dist', 'index.js'))) {
-        return undefined;
-    }
-    if (!existsSync(entrypoint)) {
-        return undefined;
-    }
-    return `node ${quoteShellArg(entrypoint)}`;
 }
 
 function inferLocalDevManagerCommand(): string | undefined {
@@ -108,25 +162,41 @@ async function createAiContextGenerator(): Promise<AiContextGeneratorInstance> {
     return new mod.AiContextGenerator();
 }
 
-export class UpdateAiCommand {
-    constructor(private program: Command) {
-        this.program
-            .command('update-ai')
-            .description('Update AI Context (AGENTS.md and snippets)')
-            .option('--n8n-version <version>', 'n8n instance version to write when API discovery is unavailable')
-            .option('--cli-version <version>', 'n8nac CLI dist tag to use in generated AI context')
-            .option('--cli-cmd <command>', 'Override the generated n8nac command in AGENTS.md (for local dev builds)')
-            .option('--manager-cmd <command>', 'Override the generated n8n-manager command in AGENTS.md (for local dev builds)')
-            .option('--silent', 'Suppress all output (used for background refresh)')
-            .action(async (options) => {
-                await this.run(options);
-            });
+/**
+ * One dim line when a newer version is published. Runs only after update-ai has already
+ * succeeded, and swallows everything: a version check has no business failing a command.
+ * Written to stderr, like the refresh notice, so machine-readable stdout stays clean.
+ *
+ * Built by concatenation rather than a template literal so the backticks in the message
+ * are plainly literal.
+ */
+async function noticeIfOutdated(): Promise<void> {
+    try {
+        if (devCheckoutEntrypoint()) return;
+
+        const current = getCliVersion();
+        const distTag = getDistTag();
+        const published = await findNewerPublishedVersion(current, distTag);
+        if (!published) return;
+
+        console.error(chalk.dim(
+            'ℹ  n8nac: ' + published + ' is published, this is ' + current + '. '
+            + 'Update with `npm i n8nac@' + (distTag ?? 'latest') + '`, adding `-g` if you installed '
+            + 'globally, then rerun `update-ai`.',
+        ));
+    } catch {
+        // Never surface a version check to the user as a failure.
     }
+}
+
+export class UpdateAiCommand {
 
     /**
      * Fire-and-forget check: if AGENTS.md is missing a version stamp or the stamped version
      * differs from the installed n8nac CLI version, silently regenerates AI context files.
-     * Safe to call at the top of any command — never throws.
+     * The native MCP level stamp is part of the fingerprint: a level change regenerates
+     * even when the CLI version is unchanged. Safe to call at the top of any
+     * command — never throws.
      */
     static async checkAndRefreshIfStale(projectRoot: string): Promise<void> {
         try {
@@ -136,9 +206,15 @@ export class UpdateAiCommand {
             const stampedVersion = readAgentsMdVersion(projectRoot);
             const currentVersion = getCliVersion();
 
-            if (currentVersion && stampedVersion === currentVersion) return; // already up-to-date
+            if (currentVersion && stampedVersion === currentVersion) {
+                const stampedLevel = readAgentsMdLevel(projectRoot);
+                const currentLevel = resolveActiveNativeMcpLevel(projectRoot)?.level;
+                // No level comparison possible (no pinned environment, or a
+                // pre-fingerprint file with nothing configured): keep the file.
+                if (currentLevel === undefined || stampedLevel === currentLevel) return;
+            }
 
-            await new UpdateAiCommand(new Command()).run({ silent: true, projectRoot });
+            await new UpdateAiCommand().run({ silent: true, projectRoot });
         } catch {
             // Never surface background refresh errors to the user
         }
@@ -183,10 +259,12 @@ export class UpdateAiCommand {
             const distTag = typeof options.cliVersion === 'string' && options.cliVersion.trim()
                 ? options.cliVersion.trim()
                 : getDistTag();
+            const nativeMcp = resolveActiveNativeMcpLevel(projectRoot);
             await aiContextGenerator.generate(projectRoot, version, distTag, {
-                cliCommandOverride: options.cliCmd || inferLocalDevCliCommand(projectRoot),
+                cliCommandOverride: options.cliCmd || inferFastCliCommand(projectRoot),
                 managerCommandOverride: options.managerCmd || inferLocalDevManagerCommand(),
                 cliVersion: getCliVersion(),
+                nativeMcp,
             } as Parameters<AiContextGeneratorInstance['generate']>[3] & { managerCommandOverride?: string });
             if (!silent) console.log(chalk.green('   ✅ AI context files created.'));
 
@@ -223,6 +301,8 @@ export class UpdateAiCommand {
                 console.log(chalk.gray('   ✔ .agents/skills: Portable n8n-architect skill fallback'));
                 console.log(chalk.gray('   ✔ n8n-workflows.d.ts: TypeScript stubs (per environment)'));
                 console.log(chalk.gray('   ✔ Source of truth: n8n-nodes-technical.json (via @n8n-as-code/skills)\n'));
+
+                await noticeIfOutdated();
             } else if (updatedCount > 0 || existsSync(join(projectRoot, 'AGENTS.md'))) {
                 // Single dim notice so the user knows a refresh happened — written to stderr
                 // to avoid corrupting machine-readable stdout output (e.g. `n8nac list --raw`)

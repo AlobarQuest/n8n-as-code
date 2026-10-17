@@ -1,30 +1,16 @@
 #!/usr/bin/env node
 import { Command, Option } from 'commander';
-import { ListCommand } from './commands/list.js';
-import { SyncCommand } from './commands/sync.js';
-import { PromoteCommand } from './commands/promote.js';
-import { UpdateAiCommand } from './commands/update-ai.js';
-import { ConvertCommand } from './commands/convert.js';
-import { TestCommand } from './commands/test.js';
-import { TestPlanCommand } from './commands/test-plan.js';
-import { CredentialCommand } from './commands/credential.js';
-import { WorkflowCommand } from './commands/workflow.js';
-import { ExecutionCommand } from './commands/execution.js';
 import chalk from 'chalk';
 
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
-import { parsePositiveIntegerOption } from './utils/option-parsers.js';
+import { parsePositiveIntegerOption, parseLevelOption } from './utils/option-parsers.js';
 import { spawn } from 'child_process';
-import { createN8nManagerFacade } from '@n8n-as-code/manager-adapter';
-import { ConfigService } from './services/config-service.js';
-import {
-    N8N_FACADE_SETUP_MODES,
-    isN8nFacadeSetupMode,
-    type N8nFacadeSetupMode,
-} from '@n8n-as-code/workflow-core';
+import type { ConfigService } from './services/config-service.js';
+import { installExtraCaCertificates } from './core/services/tls-certificates.js';
+import type { N8nFacadeSetupMode } from '@n8n-as-code/workflow-core';
 import {
     createTelemetryClient,
     getTelemetryStatus,
@@ -35,6 +21,29 @@ import {
     type TelemetryProperties,
 } from '@n8n-as-code/telemetry';
 
+/**
+ * Command implementations are loaded on demand. Registration below only needs literals,
+ * so a metadata command (--version, --help, env, telemetry) never pays for the graph
+ * behind sync, credentials or the manager facade.
+ */
+const load = {
+    list: () => import('./commands/list.js'),
+    sync: () => import('./commands/sync.js'),
+    promote: () => import('./commands/promote.js'),
+    updateAi: () => import('./commands/update-ai.js'),
+    convert: () => import('./commands/convert.js'),
+    test: () => import('./commands/test.js'),
+    testPlan: () => import('./commands/test-plan.js'),
+    credential: () => import('./commands/credential.js'),
+    workflow: () => import('./commands/workflow.js'),
+    execution: () => import('./commands/execution.js'),
+    base: () => import('./commands/base.js'),
+    config: () => import('./services/config-service.js'),
+    managerAdapter: () => import('@n8n-as-code/manager-adapter'),
+    restFolderSource: () => import('./core/services/rest-folder-source.js'),
+    workflowCore: () => import('@n8n-as-code/workflow-core'),
+};
+
 async function readSecretFromStdin(): Promise<string> {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) {
@@ -42,6 +51,8 @@ async function readSecretFromStdin(): Promise<string> {
     }
     return Buffer.concat(chunks).toString('utf8').trim().replace(/^['"]|['"]$/g, '');
 }
+
+const MANAGED_INSTANCE_API_KEY_ERROR = 'Managed instance environments do not take an API key. Configure credentials through the managed n8n instance instead.';
 
 async function hydrateApiKeyFromStdin(options: { apiKey?: string; apiKeyStdin?: boolean }): Promise<void> {
     if (options.apiKey || !options.apiKeyStdin) {
@@ -61,8 +72,8 @@ function defaultNativeMcpEndpointFromHost(host: string): string {
     return `${host.trim().replace(/\/+$/g, '')}/mcp-server/http`;
 }
 
-function createManagerFacadeFromOptions(options: { host?: string; apiKey?: string; projectId?: string }) {
-    return createN8nManagerFacade({
+async function createManagerFacadeFromOptions(options: { host?: string; apiKey?: string; projectId?: string }) {
+    return (await load.managerAdapter()).createN8nManagerFacade({
         n8nHost: options.host || process.env.N8N_HOST,
         n8nApiKey: options.apiKey || process.env.N8N_API_KEY,
         projectId: options.projectId || process.env.N8N_PROJECT_ID,
@@ -70,7 +81,7 @@ function createManagerFacadeFromOptions(options: { host?: string; apiKey?: strin
 }
 
 async function ensureManagedLocalTarget(configService: ConfigService, instanceId: string) {
-    const instance = (await createManagerFacadeFromOptions({}).listInstances()).find((item) => item.id === instanceId);
+    const instance = (await (await createManagerFacadeFromOptions({})).listInstances()).find((item) => item.id === instanceId);
     if (!instance) {
         throw new Error(`Unknown managed local n8n instance: ${instanceId}`);
     }
@@ -103,8 +114,14 @@ function printJsonOrText(options: { json?: boolean }, payload: unknown, text: st
     console.log(text);
 }
 
+/**
+ * Keep a command out of the top-level `--help` index while leaving it fully usable.
+ *
+ * Commander reads `_hidden`; assigning a public `hidden` property does nothing, which is
+ * why `setup` and `setup-modes` were listed for as long as this helper existed.
+ */
 function hideCommand<T extends Command>(command: T): T {
-    (command as T & { hidden: boolean }).hidden = true;
+    (command as T & { _hidden: boolean })._hidden = true;
     return command;
 }
 
@@ -282,6 +299,12 @@ async function runMcpDiagnosticCommand(
     });
 }
 
+// Trust anchors must be in place before the first outbound request. Node already applies
+// NODE_EXTRA_CA_CERTS to its own trust store, but re-reading it here keeps the CLI and the
+// VS Code extension host — which cannot honour it — on identical behaviour, and adds the
+// multi-path N8NAC_EXTRA_CA_CERTS form. The OS store stays with Node's own --use-system-ca.
+installExtraCaCertificates();
+
 const program = new Command();
 const telemetry = createTelemetryClient({ facade: 'cli', version: getVersion() });
 const commandStartTimes = new WeakMap<Command, number>();
@@ -308,14 +331,14 @@ const isActiveCliCommand = (commandPath: string): boolean => {
     return commandPath !== 'setup-modes' && commandPath !== 'workspace status';
 };
 
-const telemetryCommandProperties = (command: Command): TelemetryProperties => {
+const telemetryCommandProperties = async (command: Command): Promise<TelemetryProperties> => {
     const commandPath = getCommandPath(command);
     const [commandName, ...rest] = commandPath.split(' ');
     let hasWorkspace = false;
     let hasApiKey = false;
 
     try {
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const workspaceConfig = configService.getWorkspaceConfig();
         hasWorkspace = Boolean(workspaceConfig.syncFolder || workspaceConfig.workflowDir || workspaceConfig.projectId);
         const localConfig = configService.getLocalConfig();
@@ -398,11 +421,11 @@ program.hook('postAction', restoreGlobalInstanceOption);
 program.hook('preAction', (_thisCommand, actionCommand) => {
     commandStartTimes.set(actionCommand, Date.now());
 });
-program.hook('postAction', (_thisCommand, actionCommand) => {
+program.hook('postAction', async (_thisCommand, actionCommand) => {
     const commandPath = getCommandPath(actionCommand);
     const startedAt = commandStartTimes.get(actionCommand) ?? Date.now();
     telemetry.track('cli_command_completed', {
-        ...telemetryCommandProperties(actionCommand),
+        ...(await telemetryCommandProperties(actionCommand)),
         outcome: 'success',
         duration_ms: Date.now() - startedAt,
     });
@@ -458,7 +481,7 @@ workspaceProgram.command('status')
     .description('Show the effective n8n workspace context resolved by the backend')
     .option('--json', 'Output effective workspace context as JSON')
     .action(async (options) => {
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const selectedEnvironment = process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
         const workspaceConfig = configService.getWorkspaceConfig();
         const resolvedEnvironment = selectedEnvironment
@@ -472,7 +495,13 @@ workspaceProgram.command('status')
                 workspaceConfig.activeEnvironmentId ? `Env     : ${chalk.bold(resolvedEnvironment?.environmentName || workspaceConfig.activeEnvironment?.name || workspaceConfig.activeEnvironmentId)}` : undefined,
                 `Instance: ${chalk.bold(resolvedEnvironment?.activeInstanceName || workspaceConfig.activeInstanceId || '(none)')}`,
                 `Project : ${chalk.bold(resolvedEnvironment?.projectName || workspaceConfig.projectName || workspaceConfig.projectId || '(none)')}`,
+                // Without the host this command reads as though setup did nothing, and it
+                // resolves the environment already, so the value costs nothing to show.
+                `Host    : ${chalk.bold(resolvedEnvironment?.host || workspaceConfig.host || '(none)')}`,
                 `Workflows path: ${chalk.bold(resolvedEnvironment?.workflowsPath || workspaceConfig.workflowsPath || '(none)')}`,
+                // This command answers "what context am I in", not "does it work". Point at
+                // the one that checks, rather than making every context read hit the network.
+                chalk.gray('\nRun `n8nac env status` to check the instance is reachable.'),
                 '',
             ].filter(Boolean).join('\n'),
         );
@@ -485,10 +514,36 @@ const environmentProgram = program.command('env')
 environmentProgram.command('list')
     .description('List workspace environments')
     .option('--json', 'Output environments as JSON')
-    .action((options) => {
-        const configService = new ConfigService();
+    .action(async (options) => {
+        const configService = new (await load.config()).ConfigService();
         const config = configService.getWorkspaceConfig();
-        const environments = configService.listEnvironments().map((environment) => {
+        // A workspace `.env` resolves an environment that was never written to disk, so
+        // "none listed" read as "nothing configured" right after a successful setup.
+        const persisted = configService.listEnvironments();
+        if (persisted.length === 0) {
+            let derived;
+            try {
+                derived = configService.resolveEnvironment();
+            } catch {
+                derived = undefined;
+            }
+            if (derived) {
+                printJsonOrText(
+                    options,
+                    // Same shape as the persisted branch below: a bare array with different
+                    // fields made --json consumers special-case the .env-derived workspace.
+                    {
+                        activeEnvironmentId: derived.environmentId,
+                        environments: [{ ...derived.environment, resolved: redactResolvedEnvironment(derived) }],
+                    },
+                    chalk.cyan(`
+${derived.environmentName} (derived from .env) -> ${derived.host}
+`),
+                );
+                return;
+            }
+        }
+        const environments = persisted.map((environment) => {
             const resolved = (() => { try { return configService.resolveEnvironment(environment.id); } catch { return undefined; } })();
             return { ...environment, resolved: redactResolvedEnvironment(resolved) };
         });
@@ -513,8 +568,8 @@ environmentProgram.command('add')
     .argument('<name>', 'Environment display name')
     .option('--base-url <url>', 'Remote n8n URL to store in this workspace environment')
     .option('--managed-instance <id>', 'Local managed n8n instance ID to reference')
-    .option('--api-key <key>', 'Store a local API key for --base-url without committing it')
-    .option('--api-key-stdin', 'Read the local API key for --base-url from stdin')
+    .option('--api-key <key>', 'Store a local API key for this environment without committing it')
+    .option('--api-key-stdin', 'Read this environment local API key from stdin')
     .option('--project-id <id>', 'n8n project ID')
     .option('--project-name <name>', 'n8n project display name')
     .option('--workflows-path <path>', 'Directory that contains this environment workflows')
@@ -522,10 +577,11 @@ environmentProgram.command('add')
     .option('--folder-sync', 'Enable folder sync for this environment')
     .option('--custom-nodes-path <path>', 'Custom nodes path for this environment')
     .option('--description <text>', 'Environment description')
+    .option('--pin', 'Pin this environment as the workspace default in the same process (saves one cold start)')
     .option('--json', 'Output environment as JSON')
     .action(async (name, options) => {
         await hydrateApiKeyFromStdin(options);
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const urlOption = options.url || options.baseUrl;
         const selectors = [urlOption, options.managedInstance].filter(Boolean);
         if (selectors.length !== 1) {
@@ -534,6 +590,9 @@ environmentProgram.command('add')
         if ((options.projectId && !options.projectName) || (!options.projectId && options.projectName)) {
             throw new Error('Provide both --project-id and --project-name, or omit both.');
         }
+        if (options.apiKey && options.managedInstance) {
+            throw new Error(MANAGED_INSTANCE_API_KEY_ERROR);
+        }
         let environmentTarget: string | undefined;
         if (urlOption) {
             const target = configService.ensureEmbeddedInstanceTarget({
@@ -541,7 +600,6 @@ environmentProgram.command('add')
                 url: urlOption,
             });
             environmentTarget = target.id;
-            if (options.apiKey) configService.saveWorkspaceTargetApiKey(target.id, options.apiKey);
         }
         if (options.managedInstance) {
             const target = await ensureManagedLocalTarget(configService, options.managedInstance);
@@ -561,7 +619,13 @@ environmentProgram.command('add')
             customNodesPath: options.customNodesPath,
             description: options.description,
         });
-        printJsonOrText(options, environment, chalk.green(`✔ Workspace environment added: ${environment.name}`));
+        // Bind the key to this environment only. It must never also be written to the shared
+        // environment target: that slot is read by every key-less environment on the same base URL,
+        // so copying a per-environment credential into it lets one environment silently
+        // authenticate as another (and the last `env add --api-key` would repoint them all).
+        if (options.apiKey && urlOption) configService.saveWorkspaceEnvironmentApiKey(environment.id, options.apiKey);
+        const added = options.pin ? configService.pinEnvironment(environment.id) : environment;
+        printJsonOrText(options, added, chalk.green(`✔ Workspace environment added: ${added.name}`));
     });
 
 environmentProgram.command('update')
@@ -570,8 +634,8 @@ environmentProgram.command('update')
     .option('--name <name>', 'New display name')
     .option('--base-url <url>', 'Move this environment to a remote n8n URL')
     .option('--managed-instance <id>', 'Move this environment to a local managed n8n instance')
-    .option('--api-key <key>', 'Store a local API key for --base-url without committing it')
-    .option('--api-key-stdin', 'Read the local API key for --base-url from stdin')
+    .option('--api-key <key>', 'Store a local API key for this environment without committing it')
+    .option('--api-key-stdin', 'Read this environment local API key from stdin')
     .option('--project-id <id>', 'n8n project ID')
     .option('--project-name <name>', 'n8n project display name')
     .option('--workflows-path <path>', 'Directory that contains this environment workflows')
@@ -582,11 +646,14 @@ environmentProgram.command('update')
     .option('--json', 'Output environment as JSON')
     .action(async (nameOrId, options) => {
         await hydrateApiKeyFromStdin(options);
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const urlOption = options.url || options.baseUrl;
         const selectors = [urlOption, options.managedInstance].filter(Boolean);
         if (selectors.length > 1) {
             throw new Error('Provide at most one of --base-url or --managed-instance.');
+        }
+        if (options.apiKey && options.managedInstance) {
+            throw new Error(MANAGED_INSTANCE_API_KEY_ERROR);
         }
         let environmentTarget: string | undefined;
         if (urlOption) {
@@ -595,7 +662,6 @@ environmentProgram.command('update')
                 url: urlOption,
             });
             environmentTarget = target.id;
-            if (options.apiKey) configService.saveWorkspaceTargetApiKey(target.id, options.apiKey);
         }
         if (options.managedInstance) {
             const target = await ensureManagedLocalTarget(configService, options.managedInstance);
@@ -611,7 +677,15 @@ environmentProgram.command('update')
             customNodesPath: options.customNodesPath,
             description: options.description,
         };
+        if (options.apiKey) {
+            const nextTargetId = environmentTarget || configService.getEnvironment(nameOrId).environmentTargetId;
+            if (configService.getInstanceTarget(nextTargetId).kind === 'managed-instance') {
+                throw new Error(MANAGED_INSTANCE_API_KEY_ERROR);
+            }
+        }
         const environment = configService.updateEnvironment(nameOrId, patch);
+        // Bind the key to this environment only -- see the note in `env add`.
+        if (options.apiKey) configService.saveWorkspaceEnvironmentApiKey(environment.id, options.apiKey);
         printJsonOrText(options, environment, chalk.green(`✔ Workspace environment updated: ${environment.name}`));
     });
 
@@ -620,8 +694,8 @@ environmentProgram.command('pin')
     .description('Pin the default workspace environment')
     .argument('<name-or-id>', 'Environment name or ID')
     .option('--json', 'Output environment as JSON')
-    .action((nameOrId, options) => {
-        const configService = new ConfigService();
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
         const environment = configService.pinEnvironment(nameOrId);
         printJsonOrText(options, environment, chalk.green(`✔ Workspace environment pinned: ${environment.name}`));
     });
@@ -632,8 +706,8 @@ environmentProgram.command('remove')
     .argument('<name-or-id>', 'Environment name or ID')
     .option('--force', 'Remove the active environment and clear the active environment pin')
     .option('--json', 'Output removed environment as JSON')
-    .action((nameOrId, options) => {
-        const configService = new ConfigService();
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
         const environment = configService.removeEnvironment(nameOrId, { force: Boolean(options.force) });
         printJsonOrText(options, environment, chalk.green(`✔ Workspace environment removed: ${environment.name}`));
     });
@@ -651,7 +725,7 @@ environmentAuthProgram.command('set')
         if (!options.apiKey && !options.apiKeyStdin) {
             throw new Error('Provide --api-key or --api-key-stdin.');
         }
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const environment = configService.resolveEnvironment(nameOrId);
         if (environment.sourceKind === 'managed-instance') {
             throw new Error(`Environment "${environment.environmentName}" uses managed instance "${environment.managedInstanceId}". Configure credentials through the managed n8n instance instead.`);
@@ -660,7 +734,7 @@ environmentAuthProgram.command('set')
         if (!options.apiKey) {
             throw new Error('Provide --api-key or --api-key-stdin.');
         }
-        configService.saveWorkspaceTargetApiKey(environment.environmentTargetId, options.apiKey);
+        configService.saveWorkspaceEnvironmentApiKey(environment.environmentId, options.apiKey);
         const resolved = await configService.prepareEnvironment(nameOrId);
         printJsonOrText(
             options,
@@ -669,31 +743,170 @@ environmentAuthProgram.command('set')
         );
     });
 
+environmentAuthProgram.command('clear')
+    .description("Remove the API key for an environment, plus the folder-login session for its instance target (shared by any environment on that target)")
+    .argument('<name-or-id>', 'Environment name or ID')
+    .option('--json', 'Output resolved environment as JSON')
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
+        const environment = configService.getEnvironment(nameOrId);
+        configService.deleteWorkspaceEnvironmentApiKey(environment.id);
+        const resolved = configService.resolveEnvironment(environment.id);
+        // A folder-login cookie is a bearer credential; clear it alongside the API key.
+        // It is stored per instance target, so this also clears it for any sibling
+        // environment pointing at the same target — the message says so.
+        configService.clearFolderSession(resolved.environmentTargetId);
+        printJsonOrText(
+            options,
+            redactResolvedEnvironment(resolved),
+            chalk.green(
+                `✔ Cleared the local API key for environment "${resolved.environmentName}" and the ` +
+                `folder-login session for its instance target "${resolved.environmentTargetName}".`,
+            ),
+        );
+    });
+
+environmentAuthProgram.command('folder-login')
+    .description("[Experimental] Store a session token so folderSync's pull can reconstruct nested folders — n8n's public workflow API never reports a workflow's folder. Logs in once via /rest and saves the session cookie locally until its server-issued expiry (never the password). Clear it with `folder-logout`.")
+    .argument('<name-or-id>', 'Environment name or ID')
+    .option('--user <email>', 'Login email / identifier')
+    .option('--password <password>', 'Login password (prefer --password-stdin; --password can be exposed in process listings)')
+    .option('--password-stdin', 'Read the login password from stdin')
+    .option('--json', 'Output result as JSON')
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
+        const environment = configService.resolveEnvironment(nameOrId);
+        if (environment.sourceKind === 'managed-instance') {
+            throw new Error(`Environment "${environment.environmentName}" uses a managed instance; folder-login is for remote n8n environments.`);
+        }
+        if (!environment.host) {
+            throw new Error(`Environment "${environment.environmentName}" has no host URL to log in against.`);
+        }
+        const user = (options.user || '').trim();
+        if (!user) throw new Error('Provide --user <email>.');
+        if (options.password && options.passwordStdin) {
+            throw new Error('Provide either --password or --password-stdin, not both.');
+        }
+        // Warn whenever --password was passed on argv, even alongside --password-stdin.
+        if (options.password) {
+            console.warn(chalk.yellow('⚠ Passing --password on the command line can expose it in process listings and shell history. Prefer --password-stdin.'));
+        }
+        if (options.passwordStdin) {
+            options.password = await readSecretFromStdin();
+        }
+        const password = options.password || '';
+        if (!password) throw new Error('Provide --password or --password-stdin.');
+
+        if (!options.json) {
+            console.log(chalk.dim('[Experimental] Authenticating via n8n internal /rest session API. For instances with SSO or 2FA, pass N8NAC_FOLDER_LOGIN_TOKEN instead.'));
+        }
+
+        const { cookie, expiresAt } = await (await load.restFolderSource()).RestFolderSource.login(environment.host, user, password);
+        configService.saveFolderSession(environment.environmentTargetId, { cookie, expiresAt, user });
+        printJsonOrText(
+            options,
+            { environment: environment.environmentName, user, expiresAt: expiresAt ?? null },
+            chalk.green(
+                `✔ [Experimental] Folder-login session stored for "${environment.environmentName}"` +
+                (expiresAt ? ` (expires ${expiresAt}).` : '.'),
+            ),
+        );
+    });
+
+environmentAuthProgram.command('folder-logout')
+    .description('[Experimental] Remove the stored folderSync session token for an environment (paired with folder-login).')
+    .argument('<name-or-id>', 'Environment name or ID')
+    .option('--json', 'Output result as JSON')
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
+        const environment = configService.resolveEnvironment(nameOrId);
+        configService.clearFolderSession(environment.environmentTargetId);
+        printJsonOrText(
+            options,
+            { environment: environment.environmentName },
+            chalk.green(`✔ Folder-login session cleared for "${environment.environmentName}".`),
+        );
+    });
+
+/**
+ * Verify the resolved environment can actually reach its instance.
+ *
+ * `accessStatus` existed but was derived from stored verification state that nothing ever
+ * wrote, so it read `unknown` forever: a wrong host or a revoked key looked exactly like a
+ * working one, and `env status` — which the generated guidance calls the source of
+ * workspace readiness — could not answer the question it exists to answer.
+ *
+ * Capped and never fatal, so an offline workspace still reports its configuration.
+ */
+async function probeEnvironmentAccess(
+    environment: { host?: string; apiKey?: string; apiKeyAvailable?: boolean },
+    timeoutMs = 5000,
+): Promise<'ready' | 'invalid-api-key' | 'runtime-unavailable' | undefined> {
+    if (!environment.host) return 'runtime-unavailable';
+    if (!environment.apiKey) return undefined;
+
+    const { N8nApiClient } = await import('./core/services/n8n-api-client.js');
+    const client = new N8nApiClient({ host: environment.host, apiKey: environment.apiKey });
+
+    // The budget is passed into the request itself: a probe that only loses a race here
+    // would still hold its socket open until the client-level timeout, and the command
+    // would take that long to exit.
+    try {
+        const outcome = await client.verifyAccess(timeoutMs);
+        if (outcome.ok) return 'ready';
+        return outcome.reason === 'unauthorized' ? 'invalid-api-key' : 'runtime-unavailable';
+    } catch {
+        return 'runtime-unavailable';
+    }
+}
+
 environmentProgram.command('status')
     .description('Show resolved workspace environment context')
     .argument('[name-or-id]', 'Environment name or ID; defaults to pinned environment or --env')
     .option('--json', 'Output resolved environment as JSON')
-    .action((nameOrId, options) => {
-        const configService = new ConfigService();
-        const environment = configService.resolveEnvironment(nameOrId || process.env.N8NAC_ENVIRONMENT?.trim() || undefined);
-        printJsonOrText(
-            options,
-            redactResolvedEnvironment(environment),
-            [
-                chalk.cyan(`\nWorkspace environment: ${environment.environmentName}\n`),
-                `Target  : ${chalk.bold(`${environment.environmentTargetName} (${environment.sourceKind})`)}`,
-                `Instance: ${chalk.bold(environment.activeInstanceName || environment.managedInstanceId || '(externalInstance)')}`,
-                `Host    : ${chalk.bold(environment.host)}`,
-                `Project : ${chalk.bold(environment.projectName || environment.projectId || '(none)')}`,
-                `Workflows path: ${chalk.bold(environment.workflowsPath || '(unresolved)')}`,
-                `API key : ${chalk.bold(environment.apiKeyAvailable ? environment.apiKeySource : 'missing')}`,
-                '',
-            ].join('\n'),
-        );
+    .option('--no-probe', 'Skip the instance reachability check and report configuration only')
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
+        try {
+            const resolved = configService.resolveEnvironment(nameOrId || process.env.N8NAC_ENVIRONMENT?.trim() || undefined);
+            const probed = options.probe === false ? undefined : await probeEnvironmentAccess(resolved);
+            const environment = probed ? { ...resolved, accessStatus: probed } : resolved;
+            printJsonOrText(
+                options,
+                redactResolvedEnvironment(environment),
+                [
+                    chalk.cyan(`\nWorkspace environment: ${environment.environmentName}\n`),
+                    `Target  : ${chalk.bold(`${environment.environmentTargetName} (${environment.sourceKind})`)}`,
+                    `Instance: ${chalk.bold(environment.activeInstanceName || environment.managedInstanceId || '(externalInstance)')}`,
+                    `Host    : ${chalk.bold(environment.host)}`,
+                    `Project : ${chalk.bold(environment.projectName || environment.projectId || '(none)')}`,
+                    `Workflows path: ${chalk.bold(environment.workflowsPath || '(unresolved)')}`,
+                    `API key : ${chalk.bold(environment.apiKeyAvailable ? environment.apiKeySource : 'missing')}`,
+                    `Access  : ${chalk.bold(environment.accessStatus)}`,
+                    '',
+                ].join('\n'),
+            );
+        } catch (error: any) {
+            if (options.json) {
+                console.log(JSON.stringify({
+                    configured: false,
+                    error: error.message,
+                    environments: configService.listEnvironments(),
+                }, null, 2));
+                process.exit(1);
+            }
+            // Naming an environment that does not exist is a user error. Rethrowing printed
+            // a Node stack trace over the message that already says what to do.
+            console.error(chalk.red(error.message));
+            process.exit(1);
+        }
     });
 
-hideCommand(program.command('setup'))
-    .description('Choose how this facade should use n8n runtime capabilities')
+// Listed deliberately. It was hidden from the day the helper was written, but the helper
+// never worked, so nobody had seen the index without it until now: two of three probe
+// agents then hunted for an `init` or `setup` entry point and did not find one.
+program.command('setup')
+    .description('Choose how this facade should use n8n runtime capabilities. A workspace .env holding N8N_HOST (and optionally N8N_API_KEY) is picked up on its own, so --host and --api-key are only needed when there is none.')
     .option('--mode <mode>', 'managed-local, connect-existing, or generation-only', 'connect-existing')
     .option('--host <url>', 'Existing n8n URL for connect-existing mode')
     .option('--api-key <key>', 'Existing n8n API key for active credential operations')
@@ -706,18 +919,18 @@ hideCommand(program.command('setup'))
         const mode = String(options.mode);
         telemetry.track('setup_started', { entrypoint: 'cli_setup', setup_mode: normalizeSetupMode(mode) });
         telemetry.track('setup_mode_selected', { setup_mode: normalizeSetupMode(mode) });
-        if (!isN8nFacadeSetupMode(mode)) {
+        if (!(await load.workflowCore()).isN8nFacadeSetupMode(mode)) {
             telemetry.track('setup_failed', {
                 setup_mode: normalizeSetupMode(mode),
                 error_category: 'configuration_error',
                 duration_ms: Date.now() - setupStartedAt,
             });
-            console.error(chalk.red(`❌ Invalid setup mode. Use one of: ${N8N_FACADE_SETUP_MODES.map((item) => item.id).join(', ')}`));
+            console.error(chalk.red(`❌ Invalid setup mode. Use one of: ${(await load.workflowCore()).N8N_FACADE_SETUP_MODES.map((item) => item.id).join(', ')}`));
             await exitWithTelemetry(1);
         }
 
-        const facade = createManagerFacadeFromOptions(options);
-        let instance: Awaited<ReturnType<ReturnType<typeof createManagerFacadeFromOptions>['setup']>>;
+        const facade = await createManagerFacadeFromOptions(options);
+        let instance: Awaited<ReturnType<Awaited<ReturnType<typeof createManagerFacadeFromOptions>>['setup']>>;
         try {
             instance = await facade.setup({
                 mode: mode as N8nFacadeSetupMode,
@@ -725,7 +938,7 @@ hideCommand(program.command('setup'))
                 n8nApiKeyRef: options.apiKey ? 'n8nac:provided-api-key' : undefined,
             });
             if (instance.id && instance.baseUrl) {
-                await new ConfigService().getOrCreateInstanceIdentifier(instance.baseUrl, instance.id).catch(() => undefined);
+                await new (await load.config()).ConfigService().getOrCreateInstanceIdentifier(instance.baseUrl, instance.id).catch(() => undefined);
             }
             telemetry.track('setup_completed', {
                 setup_mode: normalizeSetupMode(mode),
@@ -743,13 +956,62 @@ hideCommand(program.command('setup'))
             throw error;
         }
 
+        // Bridge the facade/workspace gap: `setup` configures the runtime
+        // facade but creates no workspace environment, which strands fresh
+        // agents and users (setup exits 0, yet `env status` is empty). When
+        // nothing is configured, point at the single command that finishes
+        // the job instead of leaving a silent dead end.
+        let setupNextSteps: string[] = [];
+        let resolvedEnvironmentLine: string | undefined;
+        try {
+            const setupConfigService = new (await load.config()).ConfigService();
+            // "None listed" no longer means "none available": a workspace `.env` makes an
+            // environment derivable without any command, so ask whether one resolves rather
+            // than whether one has already been written to disk.
+            let environment;
+            try {
+                environment = setupConfigService.resolveEnvironment();
+            } catch {
+                environment = undefined;
+            }
+
+            if (environment) {
+                resolvedEnvironmentLine = `Workspace environment: ${environment.environmentName} -> ${environment.host}`
+                    + (environment.apiKeyAvailable ? '' : ' (no API key yet)');
+            } else if (setupConfigService.listEnvironments().length === 0) {
+                // Managed local instances attach via --managed-instance and
+                // reject API keys — printing the base-url variant there sends
+                // agents into a guaranteed validation error.
+                const setupInstance = instance as { mode?: string; id?: string };
+                if (setupInstance?.mode === 'managed-local-docker' && setupInstance?.id) {
+                    setupNextSteps = [
+                        'No workspace environment configured yet — attach this managed instance:',
+                        `n8nac env add Local --managed-instance ${setupInstance.id} --workflows-path workflows/local --pin`,
+                    ];
+                } else {
+                    setupNextSteps = [
+                        'No workspace environment configured yet — create one to sync workflows:',
+                        'n8nac env add <name> --base-url <url> --workflows-path workflows/<name> --api-key-stdin --pin',
+                    ];
+                }
+            }
+        } catch {
+            // Never break setup output on environment inspection failure.
+        }
         printJsonOrText(
             options,
-            { instance, modes: facade.listSetupModes() },
+            {
+                instance,
+                modes: facade.listSetupModes(),
+                ...(resolvedEnvironmentLine ? { workspaceEnvironment: resolvedEnvironmentLine } : {}),
+                ...(setupNextSteps.length > 0 ? { nextSteps: setupNextSteps } : {}),
+            },
             [
                 chalk.green('✅ n8n facade setup mode saved.'),
                 `Mode: ${instance.mode}`,
                 instance.baseUrl ? `n8n host: ${instance.baseUrl}` : undefined,
+                resolvedEnvironmentLine ? chalk.green(resolvedEnvironmentLine) : undefined,
+                setupNextSteps.length > 0 ? chalk.yellow(`\n${setupNextSteps.join('\n')}`) : undefined,
             ].filter(Boolean).join('\n'),
         );
     });
@@ -757,11 +1019,11 @@ hideCommand(program.command('setup'))
 hideCommand(program.command('setup-modes'))
     .description('List supported facade setup modes')
     .option('--json', 'Output modes as JSON')
-    .action((options) => {
+    .action(async (options) => {
         printJsonOrText(
             options,
-            N8N_FACADE_SETUP_MODES,
-            N8N_FACADE_SETUP_MODES
+            (await load.workflowCore()).N8N_FACADE_SETUP_MODES,
+            (await load.workflowCore()).N8N_FACADE_SETUP_MODES
                 .map((mode) => `${mode.id}\t${mode.label}\n  ${mode.description}`)
                 .join('\n'),
         );
@@ -774,7 +1036,7 @@ credentialsProgram.command('recipes')
     .description('List credential recipes available to all facades')
     .option('--json', 'Output recipes as JSON')
     .action(async (options) => {
-        const facade = createManagerFacadeFromOptions({});
+        const facade = await createManagerFacadeFromOptions({});
         const recipes = await facade.listCredentialRecipes();
         printJsonOrText(
             options,
@@ -787,7 +1049,7 @@ credentialsProgram.command('starter-kits')
     .description('List starter credential kits')
     .option('--json', 'Output starter kits as JSON')
     .action(async (options) => {
-        const facade = createManagerFacadeFromOptions({});
+        const facade = await createManagerFacadeFromOptions({});
         const starterKits = await facade.listStarterKits();
         printJsonOrText(
             options,
@@ -800,7 +1062,7 @@ credentialsProgram.command('inventory')
     .description('Show local credential readiness inventory')
     .option('--json', 'Output inventory as JSON')
     .action(async (options) => {
-        const facade = createManagerFacadeFromOptions({});
+        const facade = await createManagerFacadeFromOptions({});
         const inventory = await facade.getCredentialInventory();
         printJsonOrText(
             options,
@@ -823,7 +1085,7 @@ credentialsProgram.command('ensure')
     .option('--json', 'Output credential ref as JSON')
     .action(async (recipeId, options) => {
         await hydrateApiKeyFromStdin(options);
-        const facade = createManagerFacadeFromOptions(options);
+        const facade = await createManagerFacadeFromOptions(options);
         const credential = await facade.ensureCredential(recipeId, {
             credentialName: options.name,
             values: parseCredentialValues(options.value),
@@ -841,7 +1103,7 @@ credentialsProgram.command('starter-kit')
     .option('--json', 'Output starter kit result as JSON')
     .action(async (starterKitId, options) => {
         await hydrateApiKeyFromStdin(options);
-        const facade = createManagerFacadeFromOptions(options);
+        const facade = await createManagerFacadeFromOptions(options);
         const result = await facade.bootstrapStarterKit(starterKitId);
         printJsonOrText(
             options,
@@ -860,7 +1122,7 @@ credentialsProgram.command('test')
     .option('--json', 'Output test result as JSON')
     .action(async (credentialIdOrRecipeId, options) => {
         await hydrateApiKeyFromStdin(options);
-        const facade = createManagerFacadeFromOptions(options);
+        const facade = await createManagerFacadeFromOptions(options);
         const result = await facade.testCredential(credentialIdOrRecipeId);
         printJsonOrText(options, result, `${result.credentialId}\t${result.status}${result.message ? `\t${result.message}` : ''}`);
     });
@@ -875,7 +1137,7 @@ credentialsProgram.command('delete')
     .option('--json', 'Output delete result as JSON')
     .action(async (credentialIdOrRecipeId, options) => {
         await hydrateApiKeyFromStdin(options);
-        const facade = createManagerFacadeFromOptions(options);
+        const facade = await createManagerFacadeFromOptions(options);
         const result = await facade.deleteCredential(credentialIdOrRecipeId);
         printJsonOrText(
             options,
@@ -904,7 +1166,7 @@ program.command('list')
             console.error(chalk.red('❌ Invalid sort mode. Use "status" or "name".'));
             await exitWithTelemetry(1);
         }
-        await new ListCommand().run({
+        await new (await load.list()).ListCommand().run({
             local: options.local,
             remote,
             raw: options.json || options.raw,
@@ -934,7 +1196,7 @@ program.command('find')
             console.error(chalk.red('❌ Invalid sort mode. Use "status" or "name".'));
             await exitWithTelemetry(1);
         }
-        await new ListCommand().run({
+        await new (await load.list()).ListCommand().run({
             local: options.local,
             remote,
             raw: options.json || options.raw,
@@ -951,17 +1213,18 @@ program.command('pull')
     .description('Download a single workflow from n8n to local directory')
     .argument('<workflowId>', 'Workflow ID to pull')
     .action(async (workflowId) => {
-        await new SyncCommand().pullOne(workflowId);
+        await new (await load.sync()).SyncCommand().pullOne(workflowId);
     });
 
 // push - Upload a single local workflow file to n8n
 program.command('push')
-    .description('Upload a single local workflow to n8n')
+    .description('Upload a single local workflow to n8n (on a published workflow, this also releases it)')
     .argument('<path>', 'Path to a local workflow file inside the active sync scope (absolute or relative)')
     .option('--verify', 'After pushing, fetch the workflow from n8n and validate it against the local schema')
+    .option('--draft', 'Keep production on the version it already ran, so the change can be checked in n8n first')
     .action(async (pathArg, options) => {
-        const cmd = new SyncCommand();
-        const workflowId = await cmd.pushOne(pathArg);
+        const cmd = new (await load.sync()).SyncCommand();
+        const workflowId = await cmd.pushOne(pathArg, { draft: options.draft === true });
         if (options.verify && workflowId) {
             console.log(chalk.dim('\n── Post-push verification ──────────────────────────────'));
             const ok = await cmd.verifyRemote(workflowId);
@@ -982,7 +1245,7 @@ program.command('promote')
     .option('--json', 'Output promotion result as JSON')
     .action(async (pathArg, options) => {
         try {
-            await new PromoteCommand().run(pathArg, {
+            await new (await load.promote()).PromoteCommand().run(pathArg, {
                 from: options.from,
                 to: options.to,
                 dryRun: options.dryRun,
@@ -993,7 +1256,7 @@ program.command('promote')
                 json: options.json,
             });
         } catch (error: any) {
-            console.error(chalk.red(`❌ Promotion failed: ${error?.message || error}`));
+            console.error(chalk.red(`❌ ${(await load.base()).formatConnectionError('Promotion failed', error)}`));
             await exitWithTelemetry(1);
         }
     });
@@ -1003,7 +1266,7 @@ program.command('verify')
     .description('Fetch a workflow from n8n and validate its nodes against the local schema (detects invalid typeVersion, bad operation values, missing required params)')
     .argument('<workflowId>', 'Workflow ID to verify')
     .action(async (workflowId) => {
-        const ok = await new SyncCommand().verifyRemote(workflowId);
+        const ok = await new (await load.sync()).SyncCommand().verifyRemote(workflowId);
         if (!ok) await exitWithTelemetry(1);
     });
 
@@ -1034,7 +1297,7 @@ Notes:
   - For classic Webhook/Form test URLs, you may need to manually arm the workflow in the n8n editor before the test URL will accept a request.
 `)
     .action(async (workflowId, options) => {
-        await exitWithTelemetry(await new TestCommand().run(workflowId, options));
+        await exitWithTelemetry(await new (await load.test()).TestCommand().run(workflowId, options));
     });
 
 program.command('test-plan')
@@ -1042,7 +1305,7 @@ program.command('test-plan')
     .argument('<workflowId>', 'Workflow ID to inspect')
     .option('--json', 'Output the test plan as JSON for agents and scripts')
     .action(async (workflowId, options) => {
-        await exitWithTelemetry(await new TestPlanCommand().run(workflowId, options));
+        await exitWithTelemetry(await new (await load.testPlan()).TestPlanCommand().run(workflowId, options));
     });
 
 // fetch - Update remote state cache for a specific workflow
@@ -1050,7 +1313,7 @@ program.command('fetch')
     .description('Fetch remote state for a specific workflow (update internal cache for comparison)')
     .argument('<workflowId>', 'Workflow ID to fetch')
     .action(async (workflowId) => {
-        const syncCommand = new SyncCommand();
+        const syncCommand = new (await load.sync()).SyncCommand();
         await syncCommand.fetchOne(workflowId);
     });
 
@@ -1064,7 +1327,7 @@ program.command('resolve')
             console.error(chalk.red('❌ Invalid mode. Use "keep-current" or "keep-incoming"'));
             await exitWithTelemetry(1);
         }
-        await new SyncCommand().resolveOne(workflowId, options.mode);
+        await new (await load.sync()).SyncCommand().resolveOne(workflowId, options.mode);
     });
 
 // convert - Convert workflows between JSON and TypeScript formats
@@ -1075,7 +1338,7 @@ program.command('convert')
     .option('-f, --force', 'Overwrite existing output file')
     .option('--format <format>', 'Target format: "json" or "typescript" (auto-detected if not specified)')
     .action(async (file, options) => {
-        await new ConvertCommand().run(file, options);
+        await new (await load.convert()).ConvertCommand().run(file, options);
     });
 
 // convert-batch - Batch convert all workflows in a directory
@@ -1089,7 +1352,7 @@ program.command('convert-batch')
             console.error(chalk.red('❌ Invalid format. Use "json" or "typescript"'));
             await exitWithTelemetry(1);
         }
-        await new ConvertCommand().batch(directory, options);
+        await new (await load.convert()).ConvertCommand().batch(directory, options);
     });
 
 const nativeMcpCmd = program.command('native-mcp')
@@ -1097,11 +1360,12 @@ const nativeMcpCmd = program.command('native-mcp')
 
 nativeMcpCmd
     .command('configure')
-    .description('Configure optional native n8n MCP assist for a workspace environment without committing secrets')
+    .description('Configure native n8n MCP usage for a workspace environment without committing secrets')
     .argument('[name-or-id]', 'Environment name or ID; defaults to pinned environment or --env')
     .option('--url <url>', 'Native n8n MCP HTTP endpoint; defaults to <environment-url>/mcp-server/http')
     .option('--token <token>', 'Native n8n MCP bearer token to store locally')
     .option('--token-stdin', 'Read the native n8n MCP bearer token from stdin')
+    .option('--level <level>', 'Native MCP usage level (cumulative): 1 = schema sync (instance ontology overlay), 2 = + live validation at push, 3 = + read-only discovery', (value) => parseLevelOption(value, '--level'))
     .option('--timeout-ms <ms>', 'Native MCP request timeout in milliseconds', (value) => parsePositiveIntegerOption(value, '--timeout-ms'))
     .option('--allow-execution-data', 'Allow full live execution payloads when explicitly requested')
     .option('--deny-execution-data', 'Disallow full live execution payloads')
@@ -1110,7 +1374,7 @@ nativeMcpCmd
     .option('--json', 'Output environment as JSON')
     .action(async (nameOrId, options) => {
         await hydrateNativeMcpTokenFromStdin(options);
-        const configService = new ConfigService();
+        const configService = new (await load.config()).ConfigService();
         const selectedEnvironment = nameOrId || process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
         const resolved = configService.resolveEnvironment(selectedEnvironment);
         const existing = resolved.environment.nativeMcp;
@@ -1119,6 +1383,7 @@ nativeMcpCmd
             enabled: true,
             mode: 'assist' as const,
             url: options.url || existing?.url || defaultNativeMcpEndpointFromHost(resolved.host),
+            level: options.level ?? existing?.level,
             timeoutMs: options.timeoutMs ?? existing?.timeoutMs,
             allowExecutionData: options.denyExecutionData ? false : options.allowExecutionData ? true : existing?.allowExecutionData,
             allowRemoteExposure: options.denyRemote ? false : options.allowRemote ? true : existing?.allowRemoteExposure,
@@ -1129,24 +1394,26 @@ nativeMcpCmd
             configService.saveNativeMcpToken(environment.id, options.token);
         }
         const snapshot = configService.getWorkspaceConfig().environments?.find((item) => item.id === environment.id) || environment;
+        const effectiveLevel = (await load.config()).effectiveNativeMcpLevel(snapshot.nativeMcp);
         printJsonOrText(
             options,
             snapshot,
             [
-                chalk.green(`✔ Native n8n MCP assist configured for environment: ${environment.name}`),
+                chalk.green(`✔ Native n8n MCP configured for environment: ${environment.name}`),
                 `Endpoint: ${snapshot.nativeMcp?.url || nativeMcp.url}`,
                 `Token   : ${snapshot.nativeMcp?.tokenConfigured ? 'stored locally' : 'not configured'}`,
+                `Level   : ${effectiveLevel} — ${(await load.config()).NATIVE_MCP_LEVEL_NAMES[effectiveLevel] ?? 'unknown'}`,
             ].join('\n'),
         );
     });
 
 nativeMcpCmd
     .command('disable')
-    .description('Disable native n8n MCP assist for a workspace environment and remove its stored token')
+    .description('Disable native n8n MCP usage for a workspace environment and remove its stored token')
     .argument('[name-or-id]', 'Environment name or ID; defaults to pinned environment or --env')
     .option('--json', 'Output environment as JSON')
-    .action((nameOrId, options) => {
-        const configService = new ConfigService();
+    .action(async (nameOrId, options) => {
+        const configService = new (await load.config()).ConfigService();
         const selectedEnvironment = nameOrId || process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
         const resolved = configService.resolveEnvironment(selectedEnvironment);
         configService.deleteNativeMcpToken(resolved.environmentId);
@@ -1157,7 +1424,7 @@ nativeMcpCmd
             },
         });
         const snapshot = configService.getWorkspaceConfig().environments?.find((item) => item.id === environment.id) || environment;
-        printJsonOrText(options, snapshot, chalk.green(`✔ Native n8n MCP assist disabled for environment: ${environment.name}`));
+        printJsonOrText(options, snapshot, chalk.green(`✔ Native n8n MCP disabled for environment: ${environment.name} (level 0)`));
     });
 
 nativeMcpCmd
@@ -1251,7 +1518,7 @@ workflowCmd
     .description('Resolve a user-facing workflow URL from the active n8nac environment')
     .option('--json', 'Output as JSON for agent/script consumption')
     .action(async (workflowId, options) => {
-        await new WorkflowCommand().present(workflowId, { json: options.json });
+        await new (await load.workflow()).WorkflowCommand().present(workflowId, { json: options.json });
     });
 
 workflowCmd
@@ -1259,7 +1526,7 @@ workflowCmd
     .argument('<workflowId>', 'Workflow ID to activate')
     .description('Activate (publish) a workflow so it can be triggered')
     .action(async (workflowId) => {
-        await new WorkflowCommand().activate(workflowId);
+        await new (await load.workflow()).WorkflowCommand().activate(workflowId);
     });
 
 workflowCmd
@@ -1267,7 +1534,7 @@ workflowCmd
     .argument('<workflowId>', 'Workflow ID to deactivate')
     .description('Deactivate a workflow (stops triggers from firing)')
     .action(async (workflowId) => {
-        await new WorkflowCommand().deactivate(workflowId);
+        await new (await load.workflow()).WorkflowCommand().deactivate(workflowId);
     });
 
 workflowCmd
@@ -1279,7 +1546,7 @@ workflowCmd
     )
     .option('--json', 'Output as JSON array for agent/script consumption')
     .action(async (workflowId, options) => {
-        await new WorkflowCommand().credentialRequired(workflowId, { json: options.json });
+        await new (await load.workflow()).WorkflowCommand().credentialRequired(workflowId, { json: options.json });
     });
 
 // execution - Inspect workflow executions
@@ -1303,7 +1570,7 @@ Examples:
   $ n8nac execution list --workflow-id <workflowId> --status error --json
 `)
     .action(async (options) => {
-        await new ExecutionCommand().list({
+        await new (await load.execution()).ExecutionCommand().list({
             workflowId: options.workflowId,
             status: options.status,
             projectId: options.projectId,
@@ -1326,7 +1593,7 @@ Examples:
   $ n8nac execution get <executionId> --include-data --json
 `)
     .action(async (id, options) => {
-        await new ExecutionCommand().get(id, {
+        await new (await load.execution()).ExecutionCommand().get(id, {
             includeData: options.includeData,
             json: options.json,
         });
@@ -1348,7 +1615,7 @@ Examples:
   $ n8nac credential schema slackApi --json
 `)
     .action(async (typeName, options) => {
-        await new CredentialCommand().schema(typeName, { json: options.json });
+        await new (await load.credential()).CredentialCommand().schema(typeName, { json: options.json });
     });
 
 credentialCmd
@@ -1361,7 +1628,7 @@ Examples:
   $ n8nac credential list --json
 `)
     .action(async (options) => {
-        await new CredentialCommand().list({ json: options.json });
+        await new (await load.credential()).CredentialCommand().list({ json: options.json });
     });
 
 credentialCmd
@@ -1370,7 +1637,7 @@ credentialCmd
     .description('Get credential metadata by ID (no secrets returned)')
     .option('--json', 'Output JSON (default behavior; accepted for script compatibility)')
     .action(async (id, options) => {
-        await new CredentialCommand().get(id, { json: options.json });
+        await new (await load.credential()).CredentialCommand().get(id, { json: options.json });
     });
 
 credentialCmd
@@ -1394,7 +1661,7 @@ Notes:
   - If creation fails, read the returned validation message and change the payload before retrying.
 `)
     .action(async (options) => {
-        await new CredentialCommand().create({
+        await new (await load.credential()).CredentialCommand().create({
             type: options.type,
             name: options.name,
             data: options.data,
@@ -1409,17 +1676,50 @@ credentialCmd
     .argument('<id>', 'Credential ID')
     .description('Permanently delete a credential')
     .action(async (id) => {
-        await new CredentialCommand().delete(id);
+        await new (await load.credential()).CredentialCommand().delete(id);
     });
 
 // skills - AI knowledge tools subcommand group
 const skillsCmd = registerSkillsPlaceholder(program);
 
-new UpdateAiCommand(program);
+// The only command registered by hand. UpdateAiCommand used to register itself from its
+// constructor, which meant constructing it eagerly just to expose the command, pulling the
+// whole update-ai graph into every invocation. The constructor no longer registers
+// anything, so this is the single source of truth for the command's option list.
+program.command('update-ai')
+    .description('Update AI Context (AGENTS.md and snippets)')
+    .option('--n8n-version <version>', 'n8n instance version to write when API discovery is unavailable')
+    .option('--cli-version <version>', 'n8nac CLI dist tag to use in generated AI context')
+    .option('--cli-cmd <command>', 'Override the generated n8nac command in AGENTS.md (for local dev builds)')
+    .option('--manager-cmd <command>', 'Override the generated n8n-manager command in AGENTS.md (for local dev builds)')
+    .option('--silent', 'Suppress all output (used for background refresh)')
+    .action(async (options) => {
+        await new (await load.updateAi()).UpdateAiCommand().run(options);
+    });
 
 if (shouldLoadSkillsCommands(process.argv)) {
     const { registerSkillsCommands } = await loadSkillsRegistrar();
     registerSkillsCommands(skillsCmd, getSkillsAssetsDir());
+}
+
+/**
+ * Kept out of the top-level `--help` index so it fits a screen.
+ *
+ * An install probe agent read the 25-command listing in two passes and then gave up and
+ * grepped the compiled bundle to enumerate commands. Everything here stays fully
+ * available and still documents itself through `n8nac <command> --help`; it is the index
+ * that is trimmed, not the surface.
+ *
+ * The line is what the package README does not document: telemetry opt-out, the `find`
+ * and `fetch` conveniences, and starting a server a plugin normally starts. Commands the
+ * README teaches stay listed — an index that contradicts the documentation costs more
+ * than a long index, and a probe agent caught exactly that. Nor is the line "human rather
+ * than agent": hiding what a human reaches for to shorten an agent's index would trade
+ * one audience for the other.
+ */
+const SECONDARY_COMMANDS = new Set(['telemetry', 'find', 'fetch', 'mcp']);
+for (const command of program.commands) {
+    if (SECONDARY_COMMANDS.has(command.name())) hideCommand(command);
 }
 
 try {

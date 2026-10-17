@@ -149,6 +149,70 @@ describe('WorkflowValidator', () => {
             w.message.includes('@tavily/n8n-nodes-tavily.tavily')
         )).toBe(true);
     });
+
+    it('does not flag parameters when the schema declares no properties', async () => {
+        // A schema with an empty property list carries no information about what is known —
+        // that is how a custom-node override opts out of parameter validation.
+        const workflow = {
+            nodes: [
+                {
+                    id: '1',
+                    name: 'Start',
+                    type: 'n8n-nodes-base.start',
+                    typeVersion: 1,
+                    position: [0, 0],
+                    parameters: { whatever: true }
+                }
+            ],
+            connections: {}
+        };
+
+        const result = await validator.validateWorkflow(workflow);
+        expect(result.valid).toBe(true);
+        expect(result.warnings.filter(w => w.message.includes('Unknown parameter'))).toEqual([]);
+    });
+
+    // Regression: the validator used to truncate node.type to its last dot-segment, so
+    // "@n8n/n8n-nodes-langchain.code" was validated against "n8n-nodes-base.code".
+    it('validates a LangChain node against its own schema when a base node shares the short name', async () => {
+        const workflow = {
+            nodes: [
+                {
+                    id: '1',
+                    name: 'LLM',
+                    type: '@n8n/n8n-nodes-langchain.code',
+                    typeVersion: 1,
+                    position: [0, 0],
+                    parameters: { code: {}, inputs: {}, outputs: {} }
+                }
+            ],
+            connections: {}
+        };
+
+        const result = await validator.validateWorkflow(workflow);
+        expect(result.valid).toBe(true);
+        expect(result.warnings.filter(w => w.message.includes('Unknown parameter'))).toEqual([]);
+    });
+
+    it('still resolves the base node for its own full type', async () => {
+        const workflow = {
+            nodes: [
+                {
+                    id: '1',
+                    name: 'Code',
+                    type: 'n8n-nodes-base.code',
+                    typeVersion: 2,
+                    position: [0, 0],
+                    parameters: { mode: 'runOnceForAllItems', jsCode: 'return items;' }
+                }
+            ],
+            connections: {}
+        };
+
+        const result = await validator.validateWorkflow(workflow);
+        expect(result.valid).toBe(true);
+        expect(result.warnings.filter(w => w.message.includes('Unknown parameter'))).toEqual([]);
+    });
 });
 
 describe('WorkflowValidator - custom nodes', () => {
@@ -239,6 +303,35 @@ describe('WorkflowValidator - custom nodes', () => {
         expect(result.valid).toBe(true);
         expect(result.errors.length).toBe(0);
         expect(result.warnings.some(w => w.message.includes('not in the schema'))).toBe(true);
+    });
+
+    // Regression: `n8nac push --verify` builds the validator without paths, which used to
+    // ignore the sidecar entirely.
+    it('resolves the sidecar from the project directory when no path is passed', async () => {
+        const previousCwd = process.cwd();
+        process.chdir(tempDir);
+        try {
+            const validator = new WorkflowValidator(indexPath);
+            const workflow = {
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'MyCustom',
+                        type: 'n8n-nodes-custom.myCustomNode',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: { endpoint: 'https://api.example.com' }
+                    }
+                ],
+                connections: {}
+            };
+
+            const result = await validator.validateWorkflow(workflow);
+            expect(result.errors.length).toBe(0);
+            expect(result.warnings.some(w => w.message.includes('not in the schema'))).toBe(false);
+        } finally {
+            process.chdir(previousCwd);
+        }
     });
 
     it('should validate required parameters from custom node schema', async () => {
@@ -538,5 +631,609 @@ describe('WorkflowValidator - nested parameter validation', () => {
         expect(result.valid).toBe(false);
         expect(result.errors).toHaveLength(1);
         expect(result.errors[0].path).toBe('nodes[Switch].parameters.rules.values[1].outputKey');
+    });
+});
+
+describe('WorkflowValidator - Issue #609 false-positives', () => {
+    const createValidatorWithNodeSchema = (nodeSchema: any): WorkflowValidator => {
+        const indexPath = path.resolve(_dirname, 'fixtures/n8n-nodes-technical.json');
+        const validator = new WorkflowValidator(indexPath);
+        jest.spyOn(validator['provider'], 'getNodeSchema').mockReturnValue(nodeSchema);
+        return validator;
+    };
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    describe('multiOptions validation', () => {
+        const multiOptionsSchema = {
+            name: 'webhook',
+            type: 'n8n-nodes-base.webhook',
+            version: 1,
+            schema: {
+                properties: [
+                    {
+                        name: 'httpMethod',
+                        type: 'multiOptions',
+                        options: [
+                            { name: 'GET', value: 'GET' },
+                            { name: 'POST', value: 'POST' },
+                            { name: 'PUT', value: 'PUT' },
+                            { name: 'DELETE', value: 'DELETE' },
+                        ],
+                    },
+                ],
+            },
+        };
+
+        it('passes valid multiOptions array', async () => {
+            const validator = createValidatorWithNodeSchema(multiOptionsSchema);
+            const result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'Webhook',
+                        type: 'n8n-nodes-base.webhook',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {
+                            httpMethod: ['GET', 'POST'],
+                        },
+                    },
+                ],
+                connections: {},
+            });
+
+            expect(result.valid).toBe(true);
+            expect(result.errors).toHaveLength(0);
+        });
+
+        it('rejects invalid array entries in multiOptions', async () => {
+            const validator = createValidatorWithNodeSchema(multiOptionsSchema);
+            const result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'Webhook',
+                        type: 'n8n-nodes-base.webhook',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {
+                            httpMethod: ['POST', 'INVALID_METHOD'],
+                        },
+                    },
+                ],
+                connections: {},
+            });
+
+            expect(result.valid).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors[0].message).toContain('Invalid value(s) [INVALID_METHOD] for parameter "httpMethod"');
+            expect(result.errors[0].path).toBe('nodes[Webhook].parameters.httpMethod');
+        });
+    });
+
+    describe('ResourceLocator values', () => {
+        it('skips ResourceLocator object without error', async () => {
+            const validator = createValidatorWithNodeSchema({
+                name: 'slack',
+                type: 'n8n-nodes-base.slack',
+                version: 1,
+                schema: {
+                    properties: [
+                        {
+                            name: 'channel',
+                            type: 'options',
+                            options: [
+                                { name: 'General', value: 'general' },
+                                { name: 'Random', value: 'random' },
+                            ],
+                        },
+                    ],
+                },
+            });
+
+            const result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'Slack',
+                        type: 'n8n-nodes-base.slack',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {
+                            channel: {
+                                __rl: true,
+                                value: 'C01234567',
+                                mode: 'id',
+                            },
+                        },
+                    },
+                ],
+                connections: {},
+            });
+
+            expect(result.valid).toBe(true);
+            expect(result.errors).toHaveLength(0);
+        });
+    });
+
+    describe('@version-scoped properties', () => {
+        const versionedNodeSchema = {
+            name: 'myVersionedNode',
+            type: 'n8n-nodes-base.myVersionedNode',
+            version: [1, 1.1, 1.2, 2],
+            schema: {
+                properties: [
+                    {
+                        name: 'operation',
+                        type: 'options',
+                        displayOptions: {
+                            show: {
+                                '@version': [1, 1.1],
+                            },
+                        },
+                        options: [
+                            { name: 'Old Op', value: 'oldOp' },
+                        ],
+                    },
+                    {
+                        name: 'operation',
+                        type: 'options',
+                        displayOptions: {
+                            show: {
+                                '@version': [{ _cnd: { gte: 2 } }],
+                            },
+                        },
+                        options: [
+                            { name: 'New Op', value: 'newOp' },
+                        ],
+                    },
+                    {
+                        name: 'legacyField',
+                        type: 'string',
+                        required: true,
+                        displayOptions: {
+                            show: {
+                                '@version': { lte: 1.2 },
+                            },
+                        },
+                    },
+                ],
+            },
+        };
+
+        it('does not validate newer typeVersions against obsolete version options', async () => {
+            const validator = createValidatorWithNodeSchema(versionedNodeSchema);
+
+            // typeVersion 2 with newOp is valid
+            const validV2Result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'MyNode',
+                        type: 'n8n-nodes-base.myVersionedNode',
+                        typeVersion: 2,
+                        position: [0, 0],
+                        parameters: {
+                            operation: 'newOp',
+                        },
+                    },
+                ],
+                connections: {},
+            });
+            expect(validV2Result.valid).toBe(true);
+            expect(validV2Result.errors).toHaveLength(0);
+
+            // typeVersion 2 with oldOp is invalid because oldOp is obsolete in v2
+            const invalidV2Result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'MyNode',
+                        type: 'n8n-nodes-base.myVersionedNode',
+                        typeVersion: 2,
+                        position: [0, 0],
+                        parameters: {
+                            operation: 'oldOp',
+                        },
+                    },
+                ],
+                connections: {},
+            });
+            expect(invalidV2Result.valid).toBe(false);
+            expect(invalidV2Result.errors.some(e => e.message.includes('Invalid value "oldOp" for parameter "operation"'))).toBe(true);
+
+            // typeVersion 1 with oldOp is valid (and requires legacyField because v1 <= 1.2)
+            const validV1Result = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'MyNode',
+                        type: 'n8n-nodes-base.myVersionedNode',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {
+                            operation: 'oldOp',
+                            legacyField: 'legacy-val',
+                        },
+                    },
+                ],
+                connections: {},
+            });
+            expect(validV1Result.valid).toBe(true);
+            expect(validV1Result.errors).toHaveLength(0);
+
+            // typeVersion 2 does NOT require legacyField because it is scoped to { lte: 1.2 }
+            const legacyCheckResult = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'MyNode',
+                        type: 'n8n-nodes-base.myVersionedNode',
+                        typeVersion: 2,
+                        position: [0, 0],
+                        parameters: {
+                            operation: 'newOp',
+                        },
+                    },
+                ],
+                connections: {},
+            });
+            expect(legacyCheckResult.errors.some(e => e.message.includes('legacyField'))).toBe(false);
+        });
+    });
+
+    describe('required properties with defaults', () => {
+        it('does not report an error when required: true properties with a default are omitted', async () => {
+            const validator = createValidatorWithNodeSchema({
+                name: 'stickyNote',
+                type: 'n8n-nodes-base.stickyNote',
+                version: 1,
+                schema: {
+                    properties: [
+                        {
+                            name: 'height',
+                            type: 'number',
+                            required: true,
+                            default: 160,
+                        },
+                        {
+                            name: 'width',
+                            type: 'number',
+                            required: true,
+                            default: 240,
+                        },
+                        {
+                            name: 'color',
+                            type: 'number',
+                            required: true,
+                            default: 1,
+                        },
+                        {
+                            name: 'title',
+                            type: 'string',
+                            required: true,
+                            // no default
+                        },
+                    ],
+                },
+            });
+
+            // When title is provided, height/width/color have schema defaults and are omitted -> valid!
+            const validResult = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'Sticky Note',
+                        type: 'n8n-nodes-base.stickyNote',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {
+                            title: 'My Note',
+                        },
+                    },
+                ],
+                connections: {},
+            });
+
+            expect(validResult.valid).toBe(true);
+            expect(validResult.errors).toHaveLength(0);
+
+            // When title (which has no default) is omitted -> invalid!
+            const invalidResult = await validator.validateWorkflow({
+                nodes: [
+                    {
+                        id: '1',
+                        name: 'Sticky Note',
+                        type: 'n8n-nodes-base.stickyNote',
+                        typeVersion: 1,
+                        position: [0, 0],
+                        parameters: {},
+                    },
+                ],
+                connections: {},
+            });
+
+            expect(invalidResult.valid).toBe(false);
+            expect(invalidResult.errors).toHaveLength(1);
+            expect(invalidResult.errors[0].message).toBe('Missing required parameter: "title"');
+        });
+    });
+});
+
+describe('WorkflowValidator - fallback model', () => {
+    const createValidator = (): WorkflowValidator => {
+        const indexPath = path.resolve(_dirname, 'fixtures/n8n-nodes-technical.json');
+        const validator = new WorkflowValidator(indexPath);
+        // Schema lookup is irrelevant here: the rule reads parameters + connections
+        jest.spyOn(validator['provider'], 'getNodeSchema').mockReturnValue({
+            name: 'chainLlm',
+            type: '@n8n/n8n-nodes-langchain.chainLlm',
+            version: 1.7,
+            schema: { properties: [] },
+        } as any);
+        return validator;
+    };
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const workflowWithFallback = (connections: any) => ({
+        nodes: [
+            { id: '1', name: 'Classify', type: '@n8n/n8n-nodes-langchain.chainLlm', typeVersion: 1.7, position: [0, 0], parameters: { needsFallback: true } },
+            { id: '2', name: 'Model', type: '@n8n/n8n-nodes-langchain.lmChatOpenAi', typeVersion: 1.7, position: [0, 200], parameters: {} },
+            { id: '3', name: 'Fallback Model', type: '@n8n/n8n-nodes-langchain.lmChatOpenAi', typeVersion: 1.7, position: [200, 200], parameters: {} },
+        ],
+        connections,
+    });
+
+    const aiConn = (index: number) => ({ ai_languageModel: [[{ node: 'Classify', type: 'ai_languageModel', index }]] });
+
+    it('rejects needsFallback: true without a model on input 1', async () => {
+        const result = await createValidator().validateWorkflow(workflowWithFallback({ 'Model': aiConn(0) }));
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(e => e.message.includes('needsFallback'))).toBe(true);
+    });
+
+    it('accepts needsFallback: true when a fallback model is wired to input 1', async () => {
+        const result = await createValidator().validateWorkflow(
+            workflowWithFallback({ 'Model': aiConn(0), 'Fallback Model': aiConn(1) })
+        );
+        expect(result.errors.some(e => e.message.includes('needsFallback'))).toBe(false);
+        expect(result.valid).toBe(true);
+    });
+
+    it('rejects needsFallback: true when the fallback model is disabled', async () => {
+        const workflow = workflowWithFallback({ 'Model': aiConn(0), 'Fallback Model': aiConn(1) });
+        workflow.nodes[2].disabled = true;
+        const result = await createValidator().validateWorkflow(workflow);
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(e => e.message.includes('needsFallback'))).toBe(true);
+    });
+
+    it('reports malformed ai_languageModel connections even with a valid fallback slot', async () => {
+        const result = await createValidator().validateWorkflow(
+            workflowWithFallback({
+                'Model': { ai_languageModel: [[{ node: 'Classify', type: 'ai_languageModel', index: 0 }], 'not-an-array'] },
+                'Fallback Model': aiConn(1),
+            })
+        );
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(e => e.message.includes('Malformed ai_languageModel connection group'))).toBe(true);
+        // The fallback slot itself is valid, so the needsFallback rule must not fire.
+        expect(result.errors.some(e => e.message.includes('needsFallback'))).toBe(false);
+    });
+
+    it('reports ai_languageModel connections with an invalid node field', async () => {
+        const result = await createValidator().validateWorkflow(
+            workflowWithFallback({ 'Model': { ai_languageModel: [[{ type: 'ai_languageModel', index: 0 }]] }, 'Fallback Model': aiConn(1) })
+        );
+        expect(result.valid).toBe(false);
+        expect(result.errors.some(e => e.message.includes('Malformed ai_languageModel connection on node "Model"'))).toBe(true);
+    });
+});
+
+describe("WorkflowValidator - server-equivalent presence gating and resource locators", () => {
+    const indexPath = path.resolve(_dirname, "fixtures/gating-nodes.json");
+
+    const gateValidator = () => new WorkflowValidator(indexPath);
+    const node = (type: string, parameters: Record<string, unknown>, typeVersion = 1) => ({
+        id: "n1",
+        name: "Test",
+        type,
+        typeVersion,
+        position: [0, 0],
+        parameters,
+    });
+
+    it("rejects a param whose schema variants are all hidden (explicit condition values)", async () => {
+        // The define variant is the only surviving one (the auto variant is
+        // fully disabled); fromInput matches neither -> rejection lists define only.
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { promptType: "fromInput", text: "hello" }, 3.1)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.text"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('This field is only allowed when: promptType="define"');
+    });
+
+    it("resolves a missing non-slash condition through its schema default (server semantics)", async () => {
+        // The auto text variant is fully disabled (expression-prefilled,
+        // disabled UI field), so the omitted promptType falls back to "auto"
+        // but matches no surviving variant -> rejection, like the server.
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { text: "hi" }, 3.1)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.text"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('This field is only allowed when: promptType="define"');
+    });
+
+    it("accepts text when the displayed variant condition is satisfied", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { promptType: "define", text: "hi" }, 3.1)],
+            connections: {},
+        });
+        expect(result.errors.filter((e) => e.message.includes("parameters.text"))).toHaveLength(0);
+    });
+
+    it("drops fully-disabled variants before gating: the fromInput sessionKey variant does not exist", async () => {
+        // The fixture models the raw schema (fromInput variant + disabledOptions,
+        // like the live memoryBufferWindow description). Narrowing must remove it,
+        // so an explicit fromInput + sessionKey is rejected exactly like the
+        // server does — the message only lists the customKey alternative.
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoMemory", { sessionIdType: "fromInput", sessionKey: "k" }, 1.4)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.sessionKey"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('This field is only allowed when: sessionIdType="customKey"');
+        expect(err!.message).not.toContain("fromInput");
+    });
+
+    it("rejects sessionKey when sessionIdType default (fromInput) hides every variant", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoMemory", { sessionKey: "k", contextWindowLength: 5 }, 1.4)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.sessionKey"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('This field is only allowed when: sessionIdType="customKey"');
+    });
+
+    it("accepts sessionKey when sessionIdType=customKey", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoMemory", { sessionIdType: "customKey", sessionKey: "k" }, 1.4)],
+            connections: {},
+        });
+        expect(result.errors.filter((e) => e.message.includes("parameters.sessionKey"))).toHaveLength(0);
+    });
+
+    it("rejects params hidden behind a /-prefixed root boolean condition", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { systemMessage: "sys" }, 3.1)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((e) => e.message.includes("parameters.systemMessage") && e.message.includes("/useSystemMessage"))).toBe(true);
+    });
+
+    it("rejects builtInTools when responsesApiEnabled is omitted, despite its schema default true", async () => {
+        // The lmChatOpenAi failure mode measured in the benchmark: the schema
+        // declares @default true for responsesApiEnabled, but the live server
+        // evaluates display conditions on explicit values only.
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { builtInTools: {} }, 3.1)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.builtInTools"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('/responsesApiEnabled=true');
+    });
+
+    it("reports multi-variant gating like the server (one-of phrasing)", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoHtml", { operation: "generateHtmlTemplate", dataPropertyName: "data" }, 1.2)],
+            connections: {},
+        });
+        expect(result.valid).toBe(false);
+        const err = result.errors.find((e) => e.message.includes("parameters.dataPropertyName"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('when one of: (operation="extractHtmlContent", sourceData="binary") or (operation="extractHtmlContent", sourceData="json")');
+    });
+
+    it("accepts an expression-valued param when its variant is displayed", async () => {
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoHtml", { operation: "extractHtmlContent", sourceData: "json", dataPropertyName: "={{ $json.d }}" }, 1.2)],
+            connections: {},
+        });
+        expect(result.errors.filter((e) => e.message.includes("dataPropertyName"))).toHaveLength(0);
+    });
+
+    it("requires __rl: true on explicitly-set resourceLocator objects", async () => {
+        const bad = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlc", { model: { mode: "list", value: "gpt-5-mini" } }, 1)],
+            connections: {},
+        });
+        expect(bad.valid).toBe(false);
+        const err = bad.errors.find((e) => e.message.includes("__rl"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('Validation failed: "parameters.model.__rl" must be "true".');
+
+        const ok = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlc", { model: { __rl: true, mode: "list", value: "gpt-5-mini" } }, 1)],
+            connections: {},
+        });
+        expect(ok.errors.filter((e) => e.message.includes("__rl"))).toHaveLength(0);
+    });
+});
+
+describe("WorkflowValidator - expression conditions and strict resource-locator shapes", () => {
+    const indexPath = path.resolve(_dirname, "fixtures/gating-nodes.json");
+    const gateValidator = () => new WorkflowValidator(indexPath);
+    const node = (type: string, parameters: Record<string, unknown>, typeVersion = 1) => ({
+        id: "n1",
+        name: "Test",
+        type,
+        typeVersion,
+        position: [0, 0],
+        parameters,
+    });
+
+    it("does not treat a property as hidden when its show condition is an expression", async () => {
+        // promptType is an expression: it may resolve to "define" at run time,
+        // so the text parameter must not be flagged as hidden.
+        const result = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoAgent", { promptType: "={{ $json.promptType }}", text: "hi" }, 3.1)],
+            connections: {},
+        });
+        expect(result.errors.filter((e) => e.message.includes("parameters.text"))).toHaveLength(0);
+    });
+
+    it("requires __rl: true on every object value of a resource-locator parameter", async () => {
+        // Object without mode/value keys but __rl missing/false must still be rejected.
+        const bad = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlc", { model: { __rl: false, cachedResultName: "x" } }, 1)],
+            connections: {},
+        });
+        expect(bad.valid).toBe(false);
+        const err = bad.errors.find((e) => e.message.includes("__rl"));
+        expect(err).toBeDefined();
+        expect(err!.message).toContain('Validation failed: "parameters.model.__rl" must be "true".');
+    });
+
+    it("requires mode and value on a __rl:true resource-locator object", async () => {
+        const bad = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlc", { model: { __rl: true } }, 1)],
+            connections: {},
+        });
+        expect(bad.valid).toBe(false);
+        expect(bad.errors.some((e) => e.message.includes("must be an object shaped like"))).toBe(true);
+    });
+
+    it("unwraps resource-locator values when evaluating display conditions", async () => {
+        // calendar = { __rl: true, value: 'primary' } satisfies show calendar=['primary'].
+        const ok = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlcCond", { calendar: { __rl: true, mode: "id", value: "primary" }, eventTitle: "Daily" }, 1)],
+            connections: {},
+        });
+        expect(ok.errors.filter((e) => e.message.includes("parameters.eventTitle"))).toHaveLength(0);
+
+        const bad = await gateValidator().validateWorkflow({
+            nodes: [node("n8n-nodes-test.demoRlcCond", { calendar: { __rl: true, mode: "id", value: "other" }, eventTitle: "Daily" }, 1)],
+            connections: {},
+        });
+        expect(bad.errors.some((e) => e.message.includes("parameters.eventTitle"))).toBe(true);
     });
 });

@@ -12,8 +12,22 @@ const _dirname = typeof __dirname !== 'undefined'
   ? __dirname
   : (_filename ? path.dirname(_filename as string) : '');
 
+export interface NativeMcpLevelContext {
+    /** Effective native MCP usage level (0 = off) for the active environment. */
+    level: number;
+    /** Display name of the active environment, when known. */
+    environmentName?: string;
+}
+
+const NATIVE_MCP_LEVEL_LABELS: Record<number, string> = {
+    0: 'off (bundled ontology only)',
+    1: 'schema sync (instance ontology overlay)',
+    2: 'live validation at push',
+    3: 'read-only discovery',
+};
+
 export class AiContextGenerator {
-  constructor() { }
+    constructor() { }
 
   private getCommandRefs(distTag?: string, cliCommandOverride?: string, projectRoot?: string): N8nacCommandRefs {
     return resolveN8nacCommandRefs({
@@ -27,19 +41,21 @@ export class AiContextGenerator {
   getAgentSkillContent(
     skillName: 'n8n-architect',
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; nativeMcp?: NativeMcpLevelContext } = {},
     projectRoot?: string,
   ): string {
     const { cliCmd, skillsCmd } = this.getCommandRefs(distTag, options.cliCommandOverride, projectRoot);
     const managerCmd = resolveN8nManagerCommand(distTag, options.managerCommandOverride, projectRoot ? process.env : {});
-    const contextRootHint = projectRoot
-      ? `Generated context root hint: \`${path.resolve(projectRoot)}\`. If this path exists, run workspace commands from there.`
-      : 'Generated context root hint: not embedded. Use the shell launch directory or the workspace path explicitly given by the user.';
-    return this.readCanonicalAgentSkill(skillName)
+    const contextRootHint = 'Generated context root hint: not embedded. Use the shell launch directory or the workspace path explicitly given by the user.';
+    const skill = this.readCanonicalAgentSkill(skillName)
       .replaceAll('{{N8NAC_CMD}}', cliCmd)
       .replaceAll('{{N8NAC_SKILLS_CMD}}', skillsCmd)
       .replaceAll('{{N8N_MANAGER_CMD}}', managerCmd)
       .replaceAll('{{N8NAC_CONTEXT_ROOT_HINT}}', contextRootHint);
+    // The level block is per-environment state: only embedded when the caller
+    // resolved an environment, so neutral generation stays byte-identical to
+    // the canonical packaged skills.
+    return options.nativeMcp ? skill + this.nativeMcpLevelNote(options.nativeMcp) : skill;
   }
 
   private readCanonicalAgentSkill(skillName: string): string {
@@ -63,7 +79,7 @@ export class AiContextGenerator {
     projectRoot: string,
     n8nVersion: string = "Unknown",
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string; cliVersion?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; cliVersion?: string; nativeMcp?: NativeMcpLevelContext } = {},
   ): Promise<void> {
     const agentsContent = this.getAgentsContent(n8nVersion, distTag, options, projectRoot);
 
@@ -76,6 +92,38 @@ export class AiContextGenerator {
     this.materializeAgentSkills(projectRoot, distTag, options);
   }
 
+  /**
+   * Per-environment native MCP usage-level note, appended to generated agent
+   * context (AGENTS.md, workspace agent, portable skill). Documents which
+   * instance calls the toolchain may make — it never grants the agent new
+   * permissions and never delegates the level choice to the agent.
+   */
+  private nativeMcpLevelNote(nativeMcp?: NativeMcpLevelContext): string {
+    // Environment names flow into generated Markdown: strip control characters
+    // (including newlines) so a crafted name cannot inject extra Markdown
+    // structure or instructions into agent context files.
+    const safeName = (nativeMcp?.environmentName ?? '')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .trim()
+      .slice(0, 120);
+    const active = nativeMcp && Number.isInteger(nativeMcp.level)
+      ? `\n\nThe pinned environment${safeName ? ` "${safeName}"` : ''} uses native n8n MCP at level ${nativeMcp.level} — ${NATIVE_MCP_LEVEL_LABELS[nativeMcp.level] ?? 'unknown'}.`
+      : '';
+    return [
+      ``,
+      `## Native MCP Usage Level${active}`,
+      ``,
+      `Native MCP usage is a cumulative ladder, configured per environment (\`n8nac native-mcp configure --level 1|2|3\`):`,
+      ``,
+      `- level 0 (off) — bundled ontology only, no instance calls. DISCOURAGED except offline: validation runs against the bundled schema only and may drift from the instance. Upgrade with \`n8nac native-mcp configure --level 1\` (or higher).`,
+      `- level 1 (schema sync) — n8nac refreshes a per-instance schema overlay, then validates locally. Do not call instance MCP tools yourself; \`n8nac push\` may be blocked by validation errors — fix the reported node parameters and retry.`,
+      `- level 2 (live validation) — \`n8nac push\` validates against the instance before any write. Same fix-and-retry loop; never bypass with \`N8NAC_PUSH_SKIP_VALIDATION\` unless the user explicitly asks.`,
+      `- level 3 (read-only discovery) — instance read tools may be available through the toolchain. You must NEVER list, search, or inspect existing workflows unless the user explicitly asks; only interact with workflows you create.`,
+      ``,
+      `You must never change the level yourself (\`native-mcp configure\`); if validation is degraded, report the toolchain message verbatim.`,
+    ].join('\n');
+  }
+
   private removeLegacySplitSkillArtifacts(projectRoot: string): void {
     fs.rmSync(path.join(projectRoot, '.github', 'agents', 'n8n-manager.agent.md'), { force: true });
     fs.rmSync(path.join(projectRoot, '.agents', 'skills', 'n8n-manager'), { recursive: true, force: true });
@@ -84,7 +132,7 @@ export class AiContextGenerator {
   private materializeWorkspaceAgents(
     projectRoot: string,
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; nativeMcp?: NativeMcpLevelContext } = {},
   ): void {
     const agentsRoot = path.join(projectRoot, '.github', 'agents');
     const agentNames = ['n8n-architect'] as const;
@@ -100,7 +148,7 @@ export class AiContextGenerator {
   private materializeAgentSkills(
     projectRoot: string,
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; nativeMcp?: NativeMcpLevelContext } = {},
   ): void {
     const skillsRoot = path.join(projectRoot, '.agents', 'skills');
     const skillNames = ['n8n-architect'] as const;
@@ -118,7 +166,7 @@ export class AiContextGenerator {
   private getWorkspaceAgentContent(
     agentName: 'n8n-architect',
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; nativeMcp?: NativeMcpLevelContext } = {},
     projectRoot?: string,
   ): string {
     return this.getAgentSkillContent(agentName, distTag, options, projectRoot)
@@ -156,26 +204,61 @@ export class AiContextGenerator {
   private getAgentsContent(
     n8nVersion: string,
     distTag?: string,
-    options: { cliCommandOverride?: string; managerCommandOverride?: string; cliVersion?: string } = {},
+    options: { cliCommandOverride?: string; managerCommandOverride?: string; cliVersion?: string; nativeMcp?: NativeMcpLevelContext } = {},
     projectRoot?: string,
   ): string {
-    const { cliCmd, skillsCmd } = this.getCommandRefs(distTag, options.cliCommandOverride, projectRoot);
+    const { cliCmd, skillsCmd, source } = this.getCommandRefs(distTag, options.cliCommandOverride, projectRoot);
     const managerCmd = resolveN8nManagerCommand(distTag, options.managerCommandOverride, process.env);
+    // npx pays npm's own startup on every invocation before any work starts. The cost is
+    // fixed rather than proportional to the package, and no npx flag avoids it, so the
+    // advice is to install once. Deliberately unquantified: the figure is machine-specific.
+    // Only shown when we actually fell back to the published npx form.
+    const installOnce = source === 'published'
+      ? [
+        ``,
+        `> Every \`npx\` call above pays npm's own startup before doing any work. That cost is`,
+        `> fixed, independent of the package, and no npx flag avoids it. Installing once removes it`,
+        `> from every later command:`,
+        `>`,
+        '> ```bash',
+        `> npm i -g n8nac${distTag ? `@${distTag}` : ''}`,
+        `> n8nac update-ai   # regenerates this file with the direct, faster command form`,
+        '> ```',
+      ]
+      : [];
+    // A local install is pinned: nothing refreshes it the way a dist tag refreshed the npx
+    // form, so the file has to say how. Only shown when we actually resolved one.
+    const updateNote = source === 'local-install'
+      ? [
+        ``,
+        `> The command above names the n8nac installed in this workspace, which is why it is not`,
+        `> an \`npx\` call and does not pay npm's startup. Nothing updates it on its own:`,
+        `>`,
+        '> ```bash',
+        `> npm i n8nac${distTag ? `@${distTag}` : '@latest'}`,
+        `> ${cliCmd} update-ai   # picks up the new version and rewrites this file`,
+        '> ```',
+      ]
+      : [];
     const versionStamp = options.cliVersion ? [`<!-- n8nac-version: ${options.cliVersion} -->`, ``] : [];
-    const contextRoot = projectRoot ? path.resolve(projectRoot) : process.cwd();
+    const levelStamp = options.nativeMcp && Number.isInteger(options.nativeMcp.level)
+      ? [`<!-- n8nac-mcp-level: ${options.nativeMcp.level} -->`, ``]
+      : [];
     return [
       ...versionStamp,
-      `## n8n-as-code Context Root`,
-      ``,
+      ...levelStamp,
+      `## n8n-as-code Context Root`,      ``,
       `This file is generated by \`${cliCmd} update-ai\`. It is bootstrap context only, not a configuration source of truth.`,
       ``,
-      `- Context root: \`${contextRoot}\``,
+      `- Context root: the current Git worktree root.`,
       `- n8n version at generation time: ${n8nVersion}`,
       `- n8nac command: \`${cliCmd}\``,
       `- n8n-manager command: \`${managerCmd}\``,
       `- n8n knowledge command: \`${skillsCmd}\``,
+      ...installOnce,
+      ...updateNote,
       ``,
-      `Run workspace commands from this context root. Do not \`cd\` into the n8n-as-code source repository, n8n-manager source repository, plugin directory, or package directory to run \`${cliCmd} workspace ...\`, \`${cliCmd} list\`, \`${cliCmd} pull\`, \`${cliCmd} push\`, or \`${cliCmd} update-ai\`.`,
+      `Run workspace commands from the current Git worktree root. Do not \`cd\` into the n8n-as-code source repository, n8n-manager source repository, plugin directory, or package directory to run \`${cliCmd} workspace ...\`, \`${cliCmd} list\`, \`${cliCmd} pull\`, \`${cliCmd} push\`, or \`${cliCmd} update-ai\`.`,
       ``,
       `---`,
       ``,
@@ -205,7 +288,7 @@ export class AiContextGenerator {
       `Before any n8n workflow command, resolve the active workspace environment:`,
       ``,
       `\`\`\`bash`,
-      `cd ${contextRoot}`,
+      `cd \"$(git rev-parse --show-toplevel)\"`,
       `${cliCmd} env status --json`,
       `\`\`\``,
       ``,
@@ -223,6 +306,7 @@ export class AiContextGenerator {
       `- Node knowledge and schema lookup: \`${skillsCmd} ...\``,
       ``,
       `Never write \`n8nac-config.json\`, \`~/.n8n-manager\`, or n8n-manager secret files by hand.`,
+      ...(options.nativeMcp ? [this.nativeMcpLevelNote(options.nativeMcp)] : []),
     ].join('\n');
   }
 

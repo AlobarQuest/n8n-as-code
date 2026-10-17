@@ -82,12 +82,23 @@ export interface NodeAST {
     retryOnFail?: boolean;
     maxTries?: number;
     waitBetweenTries?: number;
+
+    // Node state & documentation
+    disabled?: boolean;
+    notes?: string;
+    notesInFlow?: boolean;
+
+    // Legacy error handling
+    continueOnFail?: boolean;
     
     // Node parameters (property value in TypeScript)
     parameters: Record<string, any>;
     
     // AI node dependencies (from .uses() calls)
     aiDependencies?: AIDependencies;
+
+    // Passthrough for unmodelled node properties
+    [key: string]: any;
 }
 
 /**
@@ -99,21 +110,38 @@ export interface CredentialReference {
 }
 
 /**
+ * AI roles that fan in: every sub-node connects to input index 0.
+ */
+export const AI_ARRAY_ROLES = ['ai_tool', 'ai_document'] as const;
+
+/**
+ * AI roles with one sub-node per input index. An array wires index 0, 1, ...,
+ * which is how n8n exposes a fallback model or a Model Selector's inputs.
+ */
+export const AI_SINGLE_ROLES = [
+    'ai_languageModel', 'ai_memory', 'ai_outputParser', 'ai_agent', 'ai_chain',
+    'ai_textSplitter', 'ai_embedding', 'ai_retriever', 'ai_reranker', 'ai_vectorStore'
+] as const;
+
+/**
  * AI node dependencies (langchain sub-nodes)
+ *
+ * Single-valued roles accept an array: position = target input index
+ * (e.g. `ai_languageModel: ['Model', 'FallbackModel']`).
  */
 export interface AIDependencies {
-    ai_languageModel?: string;      // Property name of model node
-    ai_memory?: string;             // Property name of memory node
-    ai_outputParser?: string;       // Property name of parser node
-    ai_tool?: string[];             // Property names of tool nodes
-    ai_agent?: string;              // Property name of agent node
-    ai_chain?: string;              // Property name of chain node
-    ai_document?: string[];         // Property names of document nodes
-    ai_textSplitter?: string;       // Property name of text splitter node
-    ai_embedding?: string;          // Property name of embedding node
-    ai_retriever?: string;          // Property name of retriever node
-    ai_reranker?: string;           // Property name of reranker node
-    ai_vectorStore?: string;        // Property name of vector store node
+    ai_languageModel?: string | string[];   // Property name(s) of model node(s)
+    ai_memory?: string | string[];          // Property name of memory node
+    ai_outputParser?: string | string[];    // Property name of parser node
+    ai_tool?: string[];                     // Property names of tool nodes
+    ai_agent?: string | string[];           // Property name of agent node
+    ai_chain?: string | string[];           // Property name of chain node
+    ai_document?: string[];                 // Property names of document nodes
+    ai_textSplitter?: string | string[];    // Property name of text splitter node
+    ai_embedding?: string | string[];       // Property name of embedding node
+    ai_retriever?: string | string[];       // Property name of retriever node
+    ai_reranker?: string | string[];        // Property name of reranker node
+    ai_vectorStore?: string | string[];     // Property name of vector store node
 }
 
 /**
@@ -190,7 +218,61 @@ export interface N8nNode {
     retryOnFail?: boolean;
     maxTries?: number;
     waitBetweenTries?: number;
+
+    // Node state & documentation
+    disabled?: boolean;
+    notes?: string;
+    notesInFlow?: boolean;
+
+    // Legacy error handling
+    continueOnFail?: boolean;
+
+    // Passthrough for unmodelled node properties
+    [key: string]: any;
 }
+
+/**
+ * Known node-level metadata properties in n8n / @node decorator.
+ */
+export const KNOWN_NODE_METADATA_KEYS = [
+    'id',
+    'webhookId',
+    'name',
+    'type',
+    'version',
+    'typeVersion',
+    'position',
+    'credentials',
+    'onError',
+    'alwaysOutputData',
+    'executeOnce',
+    'retryOnFail',
+    'maxTries',
+    'waitBetweenTries',
+    'disabled',
+    'notes',
+    'notesInFlow',
+    'continueOnFail',
+] as const;
+
+/**
+ * Internal NodeAST properties that should not be emitted into @node decorators
+ * or serialized back as extra n8n node properties.
+ */
+export const INTERNAL_AST_NODE_KEYS = [
+    'propertyName',
+    'displayName',
+    'version',
+    'typeVersion',
+    'parameters',
+    'aiDependencies',
+] as const;
+
+/**
+ * Type aliases for AST / Metadata nodes
+ */
+export type IAstNode = NodeAST;
+export type INodeMetadata = NodeAST;
 
 /**
  * n8n connections structure

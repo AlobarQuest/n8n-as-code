@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { quoteShellArg } from '../../src/utils/shell.js';
 import os from 'os';
 import path from 'path';
 import { describe, it, expect, vi } from 'vitest';
@@ -74,7 +75,7 @@ describe('SyncManager push filename contract', () => {
         const outsidePath = path.join(TMP, 'outside-workflow.workflow.ts');
         expect(() => manager.resolvePushTarget(outsidePath)).toThrowError(
             expect.objectContaining({
-                message: expect.stringContaining("Run               : n8nac push '")
+                message: expect.stringContaining('Run               : n8nac push ')
             })
         );
     });
@@ -109,14 +110,14 @@ describe('SyncManager push filename contract', () => {
         );
         expect(() => manager.resolvePushTarget(path.join(TMP, 'outside workflow.workflow.ts'))).toThrowError(
             expect.objectContaining({
-                message: expect.stringContaining("Run               : n8nac push './outside workflow.workflow.ts'")
+                message: expect.stringContaining(`Run               : n8nac push ${quoteShellArg('./outside workflow.workflow.ts')}`)
             })
         );
 
         cwdSpy.mockRestore();
     });
 
-    it('rejects nested workflow paths inside the sync scope with a clear error', () => {
+    it('accepts nested workflow paths inside the sync scope', () => {
         const syncDir = path.join(TMP, 'n8nac-sync-manager-test');
         const manager = createSyncManager(syncDir);
 
@@ -125,8 +126,9 @@ describe('SyncManager push filename contract', () => {
         };
 
         const nestedPath = path.join(syncDir, 'nested', 'my-workflow.workflow.ts');
-        expect(() => manager.resolvePushTarget(nestedPath))
-            .toThrow(/nested workflow paths inside the sync scope are not supported/);
+        expect(manager.resolvePushTarget(nestedPath)).toEqual(expect.objectContaining({
+            filename: 'nested/my-workflow.workflow.ts',
+        }));
     });
 
     it('rejects empty paths', () => {
@@ -169,7 +171,36 @@ describe('SyncManager push filename contract', () => {
         expect(refreshLocalState).toHaveBeenCalledOnce();
         expect(getWorkflowIdForFilename).toHaveBeenCalledWith(workflowFilename);
         expect(refreshLocalState.mock.invocationCallOrder[0]).toBeLessThan(getWorkflowIdForFilename.mock.invocationCallOrder[0]);
-        expect(push).toHaveBeenCalledWith(workflowFilename, 'wf-123', expect.any(String));
+        expect(push).toHaveBeenCalledWith(workflowFilename, 'wf-123', expect.any(String), undefined);
+    });
+
+    // Dropping this argument would silently turn every `--draft` push into a
+    // release, which is the one thing the flag exists to prevent.
+    it('forwards draft intent to the sync engine', async () => {
+        const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8nac-sync-manager-'));
+        const manager = new SyncManager(new MockN8nApiClient() as any, {
+            directory: workspaceDir,
+            workflowsPath: workspaceDir,
+            projectId: 'personal',
+            projectName: 'Personal',
+        } as any);
+
+        const workflowFilename = 'draftable.workflow.ts';
+        fs.writeFileSync(path.join(workspaceDir, workflowFilename), '// workflow placeholder', 'utf-8');
+
+        const push = vi.fn(async () => 'wf-123');
+        (manager as any).ensureInitialized = vi.fn(async () => undefined);
+        (manager as any).watcher = {
+            getDirectory: () => workspaceDir,
+            refreshLocalState: vi.fn(async () => undefined),
+            getWorkflowIdForFilename: vi.fn(() => 'wf-123'),
+            isRemoteKnown: vi.fn(() => true),
+        };
+        (manager as any).syncEngine = { push };
+
+        await manager.push(path.join(workspaceDir, workflowFilename), { draft: true });
+
+        expect(push).toHaveBeenCalledWith(workflowFilename, 'wf-123', expect.any(String), { draft: true });
     });
 
     it('uses an explicit workflowsPath as the active sync scope', async () => {

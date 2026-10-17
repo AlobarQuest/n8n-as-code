@@ -1,0 +1,257 @@
+{
+  "mode": "rc",
+  "changed": true,
+  "rcNumber": 1,
+  "releaseVersion": "2.7.0-rc.1",
+  "packages": [
+    {
+      "name": "@n8n-as-code/transformer",
+      "path": "packages/transformer",
+      "packageJsonPath": "packages/transformer/package.json",
+      "changelogPath": "packages/transformer/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/transformer@",
+      "internalDependencies": [],
+      "currentVersion": "2.0.1",
+      "latestStableTag": "@n8n-as-code/transformer@v2.0.1",
+      "latestStableVersion": "2.0.1",
+      "bump": null,
+      "directBump": null,
+      "changed": false,
+      "targetVersion": "2.0.1",
+      "commits": [],
+      "reasons": [],
+      "rcVersion": null
+    },
+    {
+      "name": "@n8n-as-code/telemetry",
+      "path": "packages/telemetry",
+      "packageJsonPath": "packages/telemetry/package.json",
+      "changelogPath": "packages/telemetry/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/telemetry@",
+      "internalDependencies": [],
+      "currentVersion": "2.0.1",
+      "latestStableTag": "@n8n-as-code/telemetry@v2.0.1",
+      "latestStableVersion": "2.0.1",
+      "bump": null,
+      "directBump": null,
+      "changed": false,
+      "targetVersion": "2.0.1",
+      "commits": [],
+      "reasons": [],
+      "rcVersion": null
+    },
+    {
+      "name": "@n8n-as-code/workflow-core",
+      "path": "packages/workflow-core",
+      "packageJsonPath": "packages/workflow-core/package.json",
+      "changelogPath": "packages/workflow-core/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/workflow-core@",
+      "internalDependencies": [
+        "@n8n-as-code/transformer"
+      ],
+      "currentVersion": "2.0.1",
+      "latestStableTag": "@n8n-as-code/workflow-core@v2.0.1",
+      "latestStableVersion": "2.0.1",
+      "bump": null,
+      "directBump": null,
+      "changed": false,
+      "targetVersion": "2.0.1",
+      "commits": [],
+      "reasons": [],
+      "rcVersion": null
+    },
+    {
+      "name": "@n8n-as-code/manager-adapter",
+      "path": "packages/manager-adapter",
+      "packageJsonPath": "packages/manager-adapter/package.json",
+      "changelogPath": "packages/manager-adapter/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/manager-adapter@",
+      "internalDependencies": [
+        "@n8n-as-code/workflow-core"
+      ],
+      "currentVersion": "2.0.5",
+      "latestStableTag": "@n8n-as-code/manager-adapter@v2.0.5",
+      "latestStableVersion": "2.0.5",
+      "bump": null,
+      "directBump": null,
+      "changed": false,
+      "targetVersion": "2.0.5",
+      "commits": [],
+      "reasons": [],
+      "rcVersion": null
+    },
+    {
+      "name": "@n8n-as-code/skills",
+      "path": "packages/skills",
+      "packageJsonPath": "packages/skills/package.json",
+      "changelogPath": "packages/skills/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/skills@",
+      "internalDependencies": [
+        "@n8n-as-code/telemetry",
+        "@n8n-as-code/transformer"
+      ],
+      "currentVersion": "2.4.0",
+      "latestStableTag": "@n8n-as-code/skills@v2.4.0",
+      "latestStableVersion": "2.4.0",
+      "bump": "patch",
+      "directBump": "patch",
+      "changed": true,
+      "targetVersion": "2.4.1",
+      "commits": [
+        {
+          "sha": "ee63bd064f0050587d7091abdb5a34669da95b28",
+          "subject": "perf(skills,docs): name a local n8nac install instead of routing every agent call through npx",
+          "bump": "patch"
+        },
+        {
+          "sha": "11c2e8e0aa1d0bc20c029012f02681f54a44e131",
+          "subject": "fix(skills): align the test dist-tag resolver with the -rc rule",
+          "bump": "patch"
+        },
+        {
+          "sha": "ff371135231769b03f8ec273ddb772619079c12b",
+          "subject": "fix(skills): stop pinning @next on release branches by name",
+          "bump": "patch"
+        }
+      ],
+      "reasons": [
+        "direct"
+      ],
+      "rcVersion": "2.4.1-rc.1"
+    },
+    {
+      "name": "n8nac",
+      "path": "packages/cli",
+      "packageJsonPath": "packages/cli/package.json",
+      "changelogPath": "packages/cli/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "n8nac@",
+      "internalDependencies": [
+        "@n8n-as-code/manager-adapter",
+        "@n8n-as-code/mcp",
+        "@n8n-as-code/skills",
+        "@n8n-as-code/telemetry",
+        "@n8n-as-code/transformer",
+        "@n8n-as-code/workflow-core"
+      ],
+      "currentVersion": "2.6.0",
+      "latestStableTag": "n8nac@v2.6.0",
+      "latestStableVersion": "2.6.0",
+      "bump": "minor",
+      "directBump": "minor",
+      "changed": true,
+      "targetVersion": "2.7.0",
+      "commits": [
+        {
+          "sha": "36b3f231cb1a4c8c66fdf8f0c936c701579c9414",
+          "subject": "feat(cli): say so when the installed n8nac is behind what is published",
+          "bump": "minor"
+        },
+        {
+          "sha": "62020a40722736ad64489a1d5e3f81a3b9ef0b03",
+          "subject": "docs(cli): say what the Windows quoting does not promise",
+          "bump": "patch"
+        },
+        {
+          "sha": "c366dcf36dbad42eee81967a1f8c9969cd46be79",
+          "subject": "fix(cli,vscode): quote for cmd.exe, and stop keeping four copies of the rule",
+          "bump": "patch"
+        }
+      ],
+      "reasons": [
+        "direct"
+      ],
+      "rcVersion": "2.7.0-rc.1"
+    },
+    {
+      "name": "@n8n-as-code/mcp",
+      "path": "packages/mcp",
+      "packageJsonPath": "packages/mcp/package.json",
+      "changelogPath": "packages/mcp/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/mcp@",
+      "internalDependencies": [
+        "@n8n-as-code/skills",
+        "@n8n-as-code/telemetry",
+        "n8nac"
+      ],
+      "currentVersion": "2.2.0",
+      "latestStableTag": "@n8n-as-code/mcp@v2.2.0",
+      "latestStableVersion": "2.2.0",
+      "bump": "patch",
+      "directBump": null,
+      "changed": true,
+      "targetVersion": "2.2.1",
+      "commits": [],
+      "reasons": [
+        "dependency:@n8n-as-code/skills"
+      ],
+      "rcVersion": "2.2.1-rc.1"
+    },
+    {
+      "name": "n8n-as-code",
+      "path": "packages/vscode-extension",
+      "packageJsonPath": "packages/vscode-extension/package.json",
+      "changelogPath": "packages/vscode-extension/CHANGELOG.md",
+      "publishTarget": "vscode",
+      "tagPrefix": "n8n-as-code@",
+      "internalDependencies": [
+        "@n8n-as-code/manager-adapter",
+        "@n8n-as-code/skills",
+        "@n8n-as-code/telemetry",
+        "@n8n-as-code/workflow-core",
+        "n8nac"
+      ],
+      "currentVersion": "2.42.0",
+      "latestStableTag": "n8n-as-code@v2.42.0",
+      "latestStableVersion": "2.42.0",
+      "bump": "patch",
+      "directBump": "patch",
+      "changed": true,
+      "targetVersion": "2.44.0",
+      "commits": [
+        {
+          "sha": "62020a40722736ad64489a1d5e3f81a3b9ef0b03",
+          "subject": "docs(cli): say what the Windows quoting does not promise",
+          "bump": "patch"
+        },
+        {
+          "sha": "c366dcf36dbad42eee81967a1f8c9969cd46be79",
+          "subject": "fix(cli,vscode): quote for cmd.exe, and stop keeping four copies of the rule",
+          "bump": "patch"
+        }
+      ],
+      "reasons": [
+        "direct"
+      ],
+      "rcVersion": "2.44.0-rc.1"
+    },
+    {
+      "name": "@n8n-as-code/n8nac",
+      "path": "plugins/openclaw/n8n-as-code",
+      "packageJsonPath": "plugins/openclaw/n8n-as-code/package.json",
+      "changelogPath": "plugins/openclaw/n8n-as-code/CHANGELOG.md",
+      "publishTarget": "npm",
+      "tagPrefix": "@n8n-as-code/n8nac@",
+      "internalDependencies": [
+        "@n8n-as-code/telemetry",
+        "@n8n-as-code/workflow-core"
+      ],
+      "currentVersion": "2.3.0",
+      "latestStableTag": "@n8n-as-code/n8nac@v2.3.0",
+      "latestStableVersion": "2.3.0",
+      "bump": null,
+      "directBump": null,
+      "changed": false,
+      "targetVersion": "2.3.0",
+      "commits": [],
+      "reasons": [],
+      "rcVersion": null
+    }
+  ]
+}
