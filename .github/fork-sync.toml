@@ -1,0 +1,36 @@
+# fork-sync declaration (docs/operations/onboarding-a-fork.md in AlobarQuest/orchestrator).
+# Upstream is an npm workspace monorepo: its root package.json is a private, fixed 0.2.0, and it
+# commits no lockfile, so the sync compares the CLI's version and resolves the lockfile itself.
+upstream = "EtienneLescot/n8n-as-code"
+ecosystem = "npm"
+# STEPPED for the first syncs, one upstream release at a time (v2.4.1, v2.5.0, v2.6.0, v2.7.0),
+# so each review reads one release's diff. Restore '^v(\d+\.\d+\.\d+)$' after v2.7.0 lands.
+release_tag_pattern = '^v(2\.4\.1)$'
+version_manifest = "packages/cli/package.json"
+generate_lockfile = true
+# Measured at v2.7.0 in a container with the network off. `npm run build` also runs
+# `generate:nodes`, which downloads n8n's docs, and the skills package's tests need that index.
+build_commands = ["npm run build:cli"]
+test_commands = [
+  "npm test --workspace=n8nac",
+  "npm test --workspace=@n8n-as-code/transformer",
+]
+
+[review]
+# The Claude plugin's skill tells an agent with tools which commands to run; every change to it
+# is read by a person. `scripts/postbuild.mjs` runs during the build.
+paths_watched = [
+  "plugins/claude/*",
+  ".claude-plugin/*",
+  "packages/cli/scripts/*",
+]
+# The CLI, what it talks to, and its telemetry (the old sync flagged telemetry default changes).
+trust_critical = [
+  "packages/cli/src/*",
+  "packages/telemetry/*",
+  "packages/manager-adapter/*",
+  "packages/mcp/src/*",
+]
+# Releases here are large: v2.5.0 to v2.6.0 is about 1.09 MB of diff, most of it CLI and skills
+# source, so the default 400,000 would turn the model's review into a single size finding.
+max_diff_chars = 1200000
