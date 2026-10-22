@@ -624,3 +624,216 @@ fingerprint = "f7d992b5fd909b8f"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "05ec2780317889cd"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "17b624a9b634e5ae"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "2fb0af0bee127c27"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/commands/sync.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "337757d734d16473"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "36a0b95a3d381269"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "468496addaacb034"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/core/services/rest-folder-source.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "4834ccee1c6cc808"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "4d7f7e1b3809065a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "4e67511143c6653b"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) scripts/ensure-n8n-cache.cjs: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "563b2b1003982e4d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.6.0 ai (medium) plugins/claude/n8n-as-code/.claude-plugin/plugin.json: Unpinned npx -y @n8n-as-code/mcp MCP server. Option 1 chosen in session: land it; the plugin stays off the installer until the hardening session pins it."
+
+[[ack]]
+fingerprint = "57b35494ccd24179"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "5988fe16a069a3b6"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "6d205919576b82f4"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "6f36360240283c7b"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/vscode-extension/src/services/proxy-service.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "6f3b6bc7af053fab"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "800a94e562559aee"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/commands/update-ai.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "800b4b0e836ec6cb"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "81ec6008b76feaf9"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 watched-path (high) .claude-plugin/marketplace.json: Version bump to 2.4.0 only. Read in session."
+
+[[ack]]
+fingerprint = "89248a0747ae35fd"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "971dee0ddd521c1f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.6.0 ai (medium) package-lock.json: openclaw and its native and desktop-control packages are dev-only, from the OpenClaw plugin workspace, not the CLI; install scripts are disabled."
+
+[[ack]]
+fingerprint = "9b557e0c75483b4a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 watched-path (high) plugins/claude/n8n-as-code/.claude-plugin/plugin.json: Version 2.4.0 and an unpinned npx MCP server. Option 1 chosen in session: land it, and the plugin stays off the installer until the hardening session pins it."
+
+[[ack]]
+fingerprint = "9fda2bf9d1beda9c"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/package.json: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
+
+[[ack]]
+fingerprint = "a4eb919d28b04efb"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "a8d5c6353adfb9cd"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "ac09b24d37373398"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/services/config-service.ts: A cloned repository's .env can set the n8n host and receive the API key; upstream behaviour, to be reported upstream."
+
+[[ack]]
+fingerprint = "b1454eb54f1e8777"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b86dbd928d00fa8f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 watched-path (high) plugins/claude/n8n-as-code/skills/n8n-architect/SKILL.md: Skill guidance: workspace .env configures the environment, prefer the MCP tools, a push to a published workflow deploys. Read in session; the npx usage is with the hardening session."
+
+[[ack]]
+fingerprint = "bed45d25a24559f6"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "c04571913e0472ff"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "cb23648fe984d591"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "cf2752cdd6a00f28"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecycle scripts are disabled in CI and the tool installer, so it never runs on the operator machine."
+
+[[ack]]
+fingerprint = "d347b035686528c6"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 npm-bin (high) packages/cli/package.json: Adds the n8n-as-code alias beside n8nac for the same entry point. Read in session."
+
+[[ack]]
+fingerprint = "d89d170c51a677ef"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "fe6408e19f0e801a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
