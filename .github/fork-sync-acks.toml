@@ -486,3 +486,24 @@ fingerprint = "02dca4b6c6c4653a"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs: CRLF to LF rewrite; diffed in session ignoring whitespace and line endings, the only change is the category description table for n8n's new docs sections."
+
+[[ack]]
+fingerprint = "fa4475b8fadb6373"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.4.1 ai scripts/download-complete-docs.cjs, by content (ADR-0056 amendment 3): remote llms.txt headings feed path.join. Accepted at medium earlier today; build-time docs downloader the fork's build:cli and the installer never run. To be reported upstream."
+
+[[ack]]
+fingerprint = "08b65187b13cf76d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.4.1 ai package-lock.json, by content (ADR-0056 amendment 3): downgrades, same-version entries and openclaw's new transitive packages, checked in session: re-hoisting and openclaw's own pins, no entry changed source or hash at the same version."
+
+[[ack]]
+fingerprint = "c3d197ee45ca5b87"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs, by content (ADR-0056 amendment 3): CRLF to LF rewrites; diffed in session ignoring whitespace, the only changes are the category description and weighting tables for n8n's new docs sections."
