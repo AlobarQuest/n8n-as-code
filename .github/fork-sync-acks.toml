@@ -781,8 +781,8 @@ reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency
 fingerprint = "ac09b24d37373398"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
-reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/services/config-service.ts: A cloned repository's .env can set the n8n host and receive the API key; upstream behaviour, to be reported upstream."
+severity = "medium"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/services/config-service.ts: Raised to medium on re-run and accepted at medium by Devon in session. A cloned repository's .env can set the n8n host and receive the API key; upstream behaviour, to be reported upstream."
 
 [[ack]]
 fingerprint = "b1454eb54f1e8777"
@@ -837,3 +837,10 @@ fingerprint = "fe6408e19f0e801a"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "732aee7f1085c8e1"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/core/services/instance-mcp-client.ts: The MCP client sends the API key as a bearer token to the configured endpoint (HTTPS or loopback enforced, redirects refused) and appends to a file N8NAC_MCP_CALL_LOG names. Upstream behaviour, same class as the accepted pre-push MCP finding."
