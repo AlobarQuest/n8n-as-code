@@ -1,0 +1,509 @@
+# Findings a person has read and accepted, by fingerprint (fork-sync review).
+# One [[ack]] per finding: fingerprint, by, date, reason. See onboarding-a-fork.md.
+
+[[ack]]
+fingerprint = "0328854c02ceced4"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: The openclaw bump (2026.6.1 -> 2026.7.1) pulls in a new '@openclaw/ai' package and many new transitive dependencies ('@protobufjs/*', '@opentelemetry/semantic-c. Model note on the lockfile, checked in session: no entry changed source or hash at the same version, the downgrades are re-hoisting and openclaw's own pins, and new transitive packages are covered by the audit and install-script checks."
+
+[[ack]]
+fingerprint = "3171f05bda3b2264"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: Several entries show the same version before and after ('@cfworker/json-schema' 4.1.1, 'mustache' 4.2.0), which suggests the resolved URL or integrity changed w. Model note on the lockfile, checked in session: no entry changed source or hash at the same version, the downgrades are re-hoisting and openclaw's own pins, and new transitive packages are covered by the audit and install-script checks."
+
+[[ack]]
+fingerprint = "406877e837b45128"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: Some packages go backwards ('uuid' 14.0.0 -> 9.0.1, 'protobufjs' 8.4.0 -> 7.6.3), and the transformer's nested 'uuid' is removed; confirm the downgrades are int. Model note on the lockfile, checked in session: no entry changed source or hash at the same version, the downgrades are re-hoisting and openclaw's own pins, and new transitive packages are covered by the audit and install-script checks."
+
+[[ack]]
+fingerprint = "056ac00f699f5a63"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai scripts/download-complete-docs.cjs: Page category now comes from '##' headings in the remote llms.txt (only lowercased, whitespace turned into dashes) and is passed to 'path.join(PAGES_DIR, catego. Upstream build-time docs downloader; the fork builds with build:cli and the installer never runs it. To be reported upstream, not fixed in the lane."
+
+[[ack]]
+fingerprint = "0dc890c22a05cf66"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-p8wg-vrv2-v86f handlebars 4.7.9: Handlebars: JavaScript Injection via Own Property Check Bypass (critical; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "10722fe19ca11971"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-6qxp-vccf-f47h @modelcontextprotocol/sdk 1.29.0: MCP TypeScript SDK: OAuth client could send credentials to an authorization server chosen by the MCP serve. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "10b78527c267f327"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-2v37-7h3g-55p8 nanoid 3.3.16: nanoid: custom generators can loop indefinitely when size is zero (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "12ca4bc9fcec533d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-c83g-rgw3-j3cx browserslist 4.28.6: Browserslist: Unbounded memory growth (no cache eviction) via distinct query results, leading to eventual OOM (high; fi. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "245164b553051ec9"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-x97p-jq2g-jp4f axios 1.18.1: Axios: Prototype Pollution Gadget in axios toFormData Options (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "310a8ecb0f1df3bc"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-rgw5-rvv9-x895 brace-expansion 1.1.16: brace-expansion: DoS via unbounded intermediate arrays, bypassing the CVE-2026-14257 mitigation (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "3ff604a0b25a84cb"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-46jr-4wx8-v453 @modelcontextprotocol/sdk 1.29.0: MCP TypeScript SDK: One HTTP request within the default size limit could exhaust server memory during vali. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "42d1d0a65c0fa314"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-f65p-4m7j-42xc fast-uri 3.1.3: fast-uri vulnerable to server-side request forgery via malformed IPv6 normalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "42f7e8c8cb9ea91a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-mwp4-54f8-5fhr ip-address 10.2.0: ip-address: Address4 decodes leading-zero octets as decimal while resolvers decode them as octal, allowing SSRF and trust. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "4768a5e5b7316979"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-rfgv-xxqx-mfg5 undici 8.5.0: undici vulnerable to Denial of Service via unrequested WebSocket subprotocol (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "48b7f806b49c937c"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-w293-vg96-wgc3 undici 8.5.0: undici vulnerable to TLS certificate validation bypass via dropped connect options in BalancedPool (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "490a55af8023bb0a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-858h-whjf-mvg5 simple-git 3.36.0: simple-git: unsafe-operations plugin bypass via git long-option abbreviation (--receive-p/--exe) -> command execution (re. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "4b54ba75bb64d8a8"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-5p4m-2wfm-xmqj js-yaml 3.15.0: JS-YAML: Quadratic CPU consumption in !!omap resolution (3.x and 4.x) — CVE-2026-59870 fix not backported (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "4b622b6feb9f08b1"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-v2hh-gcrm-f6hx fast-uri 3.1.3: fast-uri vulnerable to host confusion via literal backslash authority delimiter (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "5395e61635927003"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-jqff-g426-hqxp fast-uri 3.1.3: fast-uri vulnerable to host confusion via percent-encoded scheme normalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "5399d586f919b056"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-7p8r-x3mc-p8w7 fast-uri 3.1.3: fast-uri vulnerable to host confusion via backslash authority introducer (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "5bb164f7c7b0b826"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-qw65-cvwx-89v3 fast-uri 3.1.2: fast-uri vulnerable to authority injection via an unvalidated port in serialize (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "6265e68b40cc2da7"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-vfj7-8cjw-p6xm braces 3.0.3: braces vulnerable to stack-exhaustion denial of service through deeply nested patterns (high; fix: deepagents 0.0.2). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "635e1ab0d15e9e30"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-22jm-h49p-29qw @modelcontextprotocol/sdk 1.29.0: MCP TypeScript SDK: Experimental tasks were not tied to the session that created them (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "69d3a5891ccd9d76"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-7p8r-x3mc-p8w7 fast-uri 3.1.2: fast-uri vulnerable to host confusion via backslash authority introducer (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "69dd9fb5241f91c2"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-587h-7wmj-h5pm vite 5.4.21: launch-editor: 'fs.existsSync()' existence check can be bypassed on Windows (high; fix: vitest 5.0.5). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "6bffa5aa74e96dca"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-q3jh-wrc6-jgq8 follow-redirects 1.16.0: follow-redirects array-form headers bypass cross-origin credential stripping (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "6c3cbd489550f923"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-85c8-ppgw-ccpr tinypool 0.8.4: Tinypool: Prototype Pollution Gadget to RCE in run() options (critical; fix: vitest 5.0.5). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "72e4122ae3f80d76"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-f65p-4m7j-42xc fast-uri 3.1.2: fast-uri vulnerable to server-side request forgery via malformed IPv6 normalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "7367d747ea45b664"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-mh99-v99m-4gvg brace-expansion 2.1.2: brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "78877cf20cf99152"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-fx2h-pf6j-xcff vite 5.4.21: vite: 'server.fs.deny' bypass on Windows alternate paths (high; fix: vitest 5.0.5). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "7ed7d381c8258d4d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-68fv-2mgg-jv7q source-map-js 1.2.1: source-map-js allows event-loop denial of service through indexed source-map section offsets (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "83246e37f5243782"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-mghh-pgcx-3jjj axios 1.18.1: Axios: ReDoS (O(N²)) in shouldBypassProxy host normalization, reachable via untrusted redirect Location (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "855168879cfaf0d7"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-r292-9mhp-454m tar 7.5.19: node-tar: Uncontrolled recursion in mapHas/filesFilter allows uncatchable stack-overflow DoS via crafted long-path tar with memb. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "8e20ae9cea5fde9f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-m8m8-qj5v-23w3 axios 1.18.1: Axios: Node HTTP adapter prototype-pollution gadget allows request socket hijack via inherited createConnection (high; fix: tr. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "90f0fe4ff750e130"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-6j4f-fj2g-mc7p brace-expansion 5.0.7: brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "9258b59e618b4a79"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-qhr7-859c-m2p7 brace-expansion 1.1.16: brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "949eb77b4d0f7b1d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-4cwx-7wf7-3272 undici 8.5.0: undici vulnerable to cross-user information disclosure and parse-time crash via degenerate private cache directives (high; fix. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "969775dac10a7e07"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-fph4-wmhf-6fwf fast-uri 3.1.3: fast-uri vulnerable to server-side request forgery via repeated hostname percent-decoding (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "984438e77cda66d2"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-rgw5-rvv9-x895 brace-expansion 2.1.2: brace-expansion: DoS via unbounded intermediate arrays, bypassing the CVE-2026-14257 mitigation (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "9f31f03bbdd48775"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-3pq3-5fj3-cg6v axios 1.18.1: Axios: HTTP/2 adapter bypasses configured DNS lookup and proxy controls (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "a607f2b809fca895"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-fph4-wmhf-6fwf fast-uri 3.1.2: fast-uri vulnerable to server-side request forgery via repeated hostname percent-decoding (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "a6ca3f8b46ca8470"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-gfr2-rv44-r23c markdown-it 14.3.0: markdown-it: Quadratic-time rendering of a single multi-line link reference definition with default options (regression . Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "a8944085a39ed0b5"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-5gmw-xhrv-c9v3 tinypool 0.8.4: Tinypool: Prototype Pollution gadget in worker options leads to Remote Code Execution (critical; fix: vitest 5.0.5). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "a95d4e0bb5dce288"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-r7fv-28h4-cvq7 markdown-it 14.3.0: markdown-it: Quadratic complexity in smartquotes with unmatched closing quotes (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "aeb4a2d1bce9c177"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-x6jw-m9v5-85vh simple-git 3.36.0: simple-git unsafe-operation guard does not block trailer command configuration (critical; fix: simple-git 4.0.2). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b01c36a84debd324"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-5jgf-p345-68v8 fast-uri 3.1.2: fast-uri vulnerable to host confusion via skipped IDN canonicalization on scheme-relative references (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b1a9d87062f233ea"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-mh99-v99m-4gvg brace-expansion 5.0.7: brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b2947f8ecd2afb43"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-8r9p-f939-6h3c follow-redirects 1.16.0: follow-redirects sensitiveHeaders regex escaping can expose credential headers (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b46a7883d575e1f3"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-qhr7-859c-m2p7 brace-expansion 5.0.7: brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "beed78051f1543eb"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-8r5x-fm3f-whwj handlebars 4.7.9: Handlebars: JavaScript Injection via AST Type Confusion in compile (bypass of CVE-2026-33937) (critical; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "c2d97351dbcbb4f5"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-2883-xcg3-v3hh js-yaml 3.15.0: js-yaml: maxTotalMergeKeys does not limit CPU use for empty merge sources (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "c328a5aa886810a3"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-g4wm-2vf7-vfgr simple-git 3.36.0: simple-git allows command execution through unblocked Git configuration includes (high; fix: simple-git 4.0.2). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "cb329240d1918a3c"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-jqff-g426-hqxp fast-uri 3.1.2: fast-uri vulnerable to host confusion via percent-encoded scheme normalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "cb7256b6bb7084a3"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-jqcg-44mw-7w3h proxy-addr 2.0.7: proxy-addr vulnerable to IP spoofing via IPv4-mapped IPv6 trust subnet (critical; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "ce1c63baa5d9cf54"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-5xrq-8626-4rwp vitest 1.6.1: When Vitest UI server is listening, arbitrary file can be read and executed (critical; fix: vitest 5.0.5). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "d672ea8b1c259c9e"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-73wf-gq98-2v4g browserslist 4.28.6: Browserslist: Uncaught crash / prototype write via untrusted browserslist-stats.json custom stats (normalizeStats) (hig. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "d704d14c046fd0f1"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-542g-h47m-68v8 axios 1.18.1: Axios: Denial of Service via Unhandled 'error' Event in HTTP/2 ClientHttp2Session Initialization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "dd98d041fcbe6596"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-6j4f-fj2g-mc7p brace-expansion 2.1.2: brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "e04184321a6b9829"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-r4gj-5m52-g5wh axios 1.18.1: Axios: maxRedirects: 0 is not enforced by the fetch adapter, allowing redirect-based SSRF (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "e320acea890826a3"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-mh99-v99m-4gvg brace-expansion 1.1.16: brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "e58fc5a8d942bdbf"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-4c8g-83qw-93j6 fast-uri 3.1.2: fast-uri vulnerable to host confusion via failed IDN canonicalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "ece78d36d1bb9a90"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-c29m-xwm3-cm6r axios 1.18.1: Axios: ReDoS in fromDataURI data: URL parser freezes the Node event loop (DoS) (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "eef528bec9f9c729"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-rgw5-rvv9-x895 brace-expansion 5.0.7: brace-expansion: DoS via unbounded intermediate arrays, bypassing the CVE-2026-14257 mitigation (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "ef390832aef92726"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-qhr7-859c-m2p7 brace-expansion 2.1.2: brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "f16aff4b78a2f0fc"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-6j4f-fj2g-mc7p brace-expansion 1.1.16: brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "f1e2c5ecb0dcd91a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-v5rq-49vh-5v5c @simple-git/argv-parser 1.1.1: simple-git: 'VISUAL' editor environment variable is omitted from unsafe editor detection (critical; fix: simp. Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "f44889d7f23f7d9f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-5jgf-p345-68v8 fast-uri 3.1.3: fast-uri vulnerable to host confusion via skipped IDN canonicalization on scheme-relative references (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "fa21fc8bfe467c0f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-4c8g-83qw-93j6 fast-uri 3.1.3: fast-uri vulnerable to host confusion via failed IDN canonicalization (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "fabb36a1f584a2b7"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-v2hh-gcrm-f6hx fast-uri 3.1.2: fast-uri vulnerable to host confusion via literal backslash authority delimiter (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "fadbf9a5441ad380"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 audit package-lock.json: GHSA-qw65-cvwx-89v3 fast-uri 3.1.3: fast-uri vulnerable to authority injection via an unvalidated port in serialize (high; fix: true). Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "0c4b6e2d113ff578"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 npm-install-script package-lock.json: node_modules/openclaw/node_modules/@google/genai: new or changed version runs an install script. CI and the tool installer install with lifecycle scripts disabled, so this script never runs on the operator machine."
+
+[[ack]]
+fingerprint = "55e2703223308f34"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 npm-install-script package-lock.json: node_modules/openclaw/node_modules/protobufjs: new or changed version runs an install script. CI and the tool installer install with lifecycle scripts disabled, so this script never runs on the operator machine."
+
+[[ack]]
+fingerprint = "5d15bdc55b5e0c57"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 npm-install-script package-lock.json: node_modules/lefthook: new or changed version runs an install script. CI and the tool installer install with lifecycle scripts disabled, so this script never runs on the operator machine."
+
+[[ack]]
+fingerprint = "abd666df1fb41579"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 npm-install-script package-lock.json: node_modules/tsx/node_modules/esbuild: new or changed version runs an install script. CI and the tool installer install with lifecycle scripts disabled, so this script never runs on the operator machine."
+
+[[ack]]
+fingerprint = "c02a47f54a06261d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 npm-install-script package-lock.json: node_modules/openclaw: new or changed version runs an install script. CI and the tool installer install with lifecycle scripts disabled, so this script never runs on the operator machine."
+
+[[ack]]
+fingerprint = "3707b43351945e00"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 watched-path .claude-plugin/marketplace.json: a watched path. Only the plugin version moves from 2.3.0 to 2.3.1; read in session, no other change."
+
+[[ack]]
+fingerprint = "4b283fde6c56e80e"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 watched-path plugins/claude/n8n-as-code/.claude-plugin/plugin.json: a watched path. Only the plugin version moves from 2.3.0 to 2.3.1; read in session, no other change."
+
+[[ack]]
+fingerprint = "4922f33d224f0111"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai scripts/download-complete-docs.cjs: reworded on re-run (now medium) of the accepted path finding; remote llms.txt headings feed path.join. Upstream build-time docs downloader; the fork builds with build:cli and the installer never runs it. To be reported upstream."
+
+[[ack]]
+fingerprint = "d8908cd58c1a8056"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: reworded on re-run; uuid 14.0.0 -> 9.0.1 and protobufjs 8.4.0 -> 7.6.3 checked in session as re-hoisting of the transformer's nested uuid and openclaw 2026.7.1's own pin; the audit covers known advisories."
+
+[[ack]]
+fingerprint = "e16240f2ba058a47"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: reworded on re-run; openclaw 2026.7.1's new transitive packages all resolve to registry.npmjs.org and are covered by the audit and install-script checks."
+
+[[ack]]
+fingerprint = "02dca4b6c6c4653a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs: CRLF to LF rewrite; diffed in session ignoring whitespace and line endings, the only change is the category description table for n8n's new docs sections."
+
+[[ack]]
+fingerprint = "fa4475b8fadb6373"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.4.1 ai scripts/download-complete-docs.cjs, by content (ADR-0056 amendment 3): remote llms.txt headings feed path.join. Accepted at medium earlier today; build-time docs downloader the fork's build:cli and the installer never run. To be reported upstream."
+
+[[ack]]
+fingerprint = "08b65187b13cf76d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.4.1 ai package-lock.json, by content (ADR-0056 amendment 3): downgrades, same-version entries and openclaw's new transitive packages, checked in session: re-hoisting and openclaw's own pins, no entry changed source or hash at the same version."
+
+[[ack]]
+fingerprint = "c3d197ee45ca5b87"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs, by content (ADR-0056 amendment 3): CRLF to LF rewrites; diffed in session ignoring whitespace, the only changes are the category description and weighting tables for n8n's new docs sections."
