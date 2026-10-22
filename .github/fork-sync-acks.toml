@@ -507,3 +507,120 @@ by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 severity = "low"
 reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs, by content (ADR-0056 amendment 3): CRLF to LF rewrites; diffed in session ignoring whitespace, the only changes are the category description and weighting tables for n8n's new docs sections."
+
+[[ack]]
+fingerprint = "2f942f718ef5528d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "35939df7834a9827"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 watched-path (high) plugins/claude/n8n-as-code/.claude-plugin/plugin.json: Version bump 2.3.1 -> 2.3.2 only. Read in session."
+
+[[ack]]
+fingerprint = "3ac3d18969451147"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "3f5675a2732b4914"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "537ee3d414c34b46"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 git-config-file (high) .gitattributes: Line-ending normalization and binary markers only; no filter or diff drivers. Read in session."
+
+[[ack]]
+fingerprint = "63fa1cbd464a62b5"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "786278b142592646"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "8b801a536d56f9ba"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.5.0 ai (medium) packages/vscode-extension/package.json: Workspace settings can add a trusted CA in the VS Code extension; nothing installs the extension on the operator machine. Report upstream."
+
+[[ack]]
+fingerprint = "8ccd235d1a827e01"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.5.0 ai (medium) packages/cli/src/core/services/tls-certificates.ts: The CLI reads extra CAs only from N8NAC_EXTRA_CA_CERTS and NODE_EXTRA_CA_CERTS; whoever sets them already controls the process."
+
+[[ack]]
+fingerprint = "915f01be70a60d60"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "990c0b559e5f720d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "b9b93d061f8dde09"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "low"
+reason = "n8n-as-code v2.5.0 ai (low) packages/cli/src/core/services/n8n-api-client.ts: v2.5.0 now verifies public hosts (v2.4.1 verified none); private, loopback and .local/.internal/.home.arpa hosts stay unverified without a configured CA. Report upstream."
+
+[[ack]]
+fingerprint = "bb942c1d630edc72"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "db11e97438959d35"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "dbb3fc9570b85d05"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 watched-path (high) plugins/claude/n8n-as-code/skills/n8n-architect/SKILL.md: One added line documenting env auth set; no new commands. Read in session."
+
+[[ack]]
+fingerprint = "ea9767e321173d24"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "eb6f5137f8104134"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
+
+[[ack]]
+fingerprint = "f16b22a672f3d95d"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 watched-path (high) .claude-plugin/marketplace.json: Version bump 2.3.1 -> 2.3.2 only. Read in session."
+
+[[ack]]
+fingerprint = "f7d992b5fd909b8f"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.5.0 audit (high) package-lock.json: Upstream dependency advisory; reported, not fixed in the lane (ADR-0056 amendment 1)."
