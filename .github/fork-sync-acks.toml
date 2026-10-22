@@ -462,3 +462,27 @@ fingerprint = "4b283fde6c56e80e"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 reason = "n8n-as-code v2.4.1 watched-path plugins/claude/n8n-as-code/.claude-plugin/plugin.json: a watched path. Only the plugin version moves from 2.3.0 to 2.3.1; read in session, no other change."
+
+[[ack]]
+fingerprint = "4922f33d224f0111"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai scripts/download-complete-docs.cjs: reworded on re-run (now medium) of the accepted path finding; remote llms.txt headings feed path.join. Upstream build-time docs downloader; the fork builds with build:cli and the installer never runs it. To be reported upstream."
+
+[[ack]]
+fingerprint = "d8908cd58c1a8056"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: reworded on re-run; uuid 14.0.0 -> 9.0.1 and protobufjs 8.4.0 -> 7.6.3 checked in session as re-hoisting of the transformer's nested uuid and openclaw 2026.7.1's own pin; the audit covers known advisories."
+
+[[ack]]
+fingerprint = "e16240f2ba058a47"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai package-lock.json: reworded on re-run; openclaw 2026.7.1's new transitive packages all resolve to registry.npmjs.org and are covered by the audit and install-script checks."
+
+[[ack]]
+fingerprint = "02dca4b6c6c4653a"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+reason = "n8n-as-code v2.4.1 ai scripts/build-complete-index.cjs: CRLF to LF rewrite; diffed in session ignoring whitespace and line endings, the only change is the category description table for n8n's new docs sections."
