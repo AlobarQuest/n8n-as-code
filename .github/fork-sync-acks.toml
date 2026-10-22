@@ -641,7 +641,7 @@ reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency
 fingerprint = "2fb0af0bee127c27"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/commands/sync.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -660,7 +660,7 @@ reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency
 fingerprint = "468496addaacb034"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/core/services/rest-folder-source.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -679,7 +679,7 @@ reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecy
 fingerprint = "4e67511143c6653b"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) scripts/ensure-n8n-cache.cjs: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -711,7 +711,7 @@ reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency
 fingerprint = "6f36360240283c7b"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/vscode-extension/src/services/proxy-service.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -724,7 +724,7 @@ reason = "n8n-as-code v2.6.0 npm-install-script (high) package-lock.json: Lifecy
 fingerprint = "800a94e562559aee"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/commands/update-ai.ts: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -762,7 +762,7 @@ reason = "n8n-as-code v2.6.0 watched-path (high) plugins/claude/n8n-as-code/.cla
 fingerprint = "9fda2bf9d1beda9c"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/package.json: Upstream behaviour read in session; low, and nothing on the operator machine depends on it."
 
 [[ack]]
@@ -842,5 +842,12 @@ reason = "n8n-as-code v2.6.0 audit (high) package-lock.json: Upstream dependency
 fingerprint = "732aee7f1085c8e1"
 by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
-severity = "low"
+severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/core/services/instance-mcp-client.ts: The MCP client sends the API key as a bearer token to the configured endpoint (HTTPS or loopback enforced, redirects refused) and appends to a file N8NAC_MCP_CALL_LOG names. Upstream behaviour, same class as the accepted pre-push MCP finding."
+
+[[ack]]
+fingerprint = "e4db59d6f9bd7570"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-22"
+severity = "medium"
+reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/index.ts: env auth folder-login posts a password to <host>/rest/login and stores the session cookie; the same opt-in login accepted for rest-folder-source.ts. Every v2.6.0 model finding is accepted up to medium, the highest any run rated them (Devon, in session)."
