@@ -61,13 +61,12 @@ function buildDocSearchEntry(page) {
 function calculateDocScore(page) {
     let score = 5.0; // Base score
 
-    // Boost for categories
+    // Boost for categories (section slugs from docs.n8n.io/llms.txt)
     const categoryBoosts = {
-        'integrations': 2.0,
-        'advanced-ai': 1.5,
-        'tutorials': 1.5,
-        'code': 1.0,
-        'concepts': 1.0
+        'nodes': 2.0,
+        'build': 1.5,
+        'deploy': 1.0,
+        'privacy-and-security': 1.0
     };
     score += categoryBoosts[page.category] || 0;
 

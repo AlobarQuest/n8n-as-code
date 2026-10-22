@@ -135,10 +135,15 @@ Status values:
 
 | Status | Meaning |
 |---|---|
-| `TRACKED` | Local and remote workflow exist and are aligned |
-| `CONFLICT` | Both sides changed since the last synced base |
+| `TRACKED` | Local and remote workflow exist (git-style "tracked"). Alignment is checked explicitly by `n8nac fetch <id>`, and implicitly at `pull`/`push` time via direct hash comparison. `n8nac list` may also surface a `drift` flag in `--json` output when local or remote changes are detected since the last sync. |
+| `CONFLICT` | Both local and remote changed since the last synced base (detected at `pull`/`push`) |
 | `EXIST_ONLY_LOCALLY` | Local workflow has not been pushed |
 | `EXIST_ONLY_REMOTELY` | Remote workflow has not been pulled |
+
+> Note: `n8nac list` is intentionally lightweight (no full payload diff, no TypeScript
+> roundtrip per workflow). It reports which workflows are tracked and, when state
+> is available, whether each side has drifted since the last sync. Use
+> `n8nac fetch <id>` for authoritative per-workflow alignment before pulling.
 
 ### `find`
 

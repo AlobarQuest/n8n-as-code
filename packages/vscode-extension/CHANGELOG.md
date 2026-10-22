@@ -1,5 +1,19 @@
 # n8n-as-code
 
+## [2.38.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.36.0...n8n-as-code@v2.38.0) (2026-07-15)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.3.0 to 2.3.1
+    * n8nac bumped from 2.4.0 to 2.4.1
+
+## [2.36.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.34.0...n8n-as-code@v2.36.0) (2026-06-10)
+
+### Bug Fixes
+
+* **vscode:** optimize extension performance ([892c88d](https://github.com/EtienneLescot/n8n-as-code/commit/892c88d36043c4a83822592e33ed3592a0a3321d))
+
 ## [2.34.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.32.0...n8n-as-code@v2.34.0) (2026-06-09)
 
 ### Features
