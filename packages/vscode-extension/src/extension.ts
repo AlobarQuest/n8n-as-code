@@ -20,6 +20,7 @@ import { WorkflowWebview } from './ui/workflow-webview.js';
 import { AgentWorkbenchWebview } from './ui/agent-workbench-webview.js';
 import { ConfigurationWebview } from './ui/configuration-webview.js';
 import { WorkflowDecorationProvider } from './ui/workflow-decoration-provider.js';
+import { openExternalNavigation } from './utils/external-navigation.js';
 
 import { ProxyService } from './services/proxy-service.js';
 import { AgentRuntimeController } from './services/agent-runtime-controller.js';
@@ -391,6 +392,41 @@ export async function activate(context: vscode.ExtensionContext) {
             if (!wf) return;
             telemetryClient?.track('vscode_workflow_view_opened', { mode: 'board', workflow_state: 'unknown' });
             await openWorkflowBoard(wf);
+        }),
+
+        registerTelemetryCommand('n8n.openInBrowser', async (arg: any) => {
+            const wf = arg?.workflow ? arg.workflow : arg;
+            if (!wf) return;
+            telemetryClient?.track('vscode_workflow_view_opened', { mode: 'browser', workflow_state: 'unknown' });
+            await openWorkflowInBrowser(wf);
+        }),
+
+        registerTelemetryCommand('n8n.setSessionCookie', async () => {
+            const input = await vscode.window.showInputBox({
+                title: 'n8n: Set SSO Session Cookie',
+                prompt: 'Enter your "n8n-auth" cookie value (from browser DevTools > Application/Storage > Cookies > n8n-auth)',
+                placeHolder: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+                password: true,
+                ignoreFocusOut: true,
+            });
+            if (!input || !input.trim()) return;
+
+            let token = input.trim();
+            if (token.startsWith('n8n-auth=')) {
+                token = token.slice('n8n-auth='.length).trim();
+            }
+            if (token.includes(';')) {
+                token = token.split(';')[0].trim();
+            }
+            if (!token) return;
+
+            try {
+                await proxyService.setSessionToken(token);
+                vscode.window.showInformationMessage('n8n SSO session cookie saved. Reloading workflow view...');
+                WorkflowWebview.reloadAll(outputChannel);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(e.message || 'Failed to save SSO session cookie');
+            }
         }),
 
         registerTelemetryCommand('n8n.openJson', async (arg: any) => {
@@ -855,6 +891,87 @@ async function openWorkflowBoard(workflow: IWorkflowStatus, viewColumn?: vscode.
         registerClipboardHandler();
     } catch (e: any) {
         vscode.window.showErrorMessage(`Failed to open n8n workflow: ${e.message}`);
+    }
+}
+
+async function resolveWorkflowBrowserUrl(workflow: IWorkflowStatus): Promise<string> {
+    if (!workflow.id) {
+        throw new Error(`Workflow "${workflow.name}" does not have a remote ID.`);
+    }
+
+    const workspaceRoot = getWorkspaceRoot();
+    let n8nBaseUrl: string | undefined;
+
+    if (workspaceRoot) {
+        try {
+            const configService = new ConfigService(workspaceRoot);
+            const workspaceConfig = configService.getWorkspaceConfig();
+            if (workspaceConfig.version === 4) {
+                const environment = await configService.prepareEnvironment();
+                n8nBaseUrl = environment.host;
+            }
+        } catch {
+            // fallback
+        }
+    }
+
+    if (!n8nBaseUrl) {
+        try {
+            const facade = createN8nManagerFacade({ workspaceRoot });
+            const prepared = await facade.prepareEffectiveContext({
+                workspaceRoot,
+                syncFolderDefault: workspaceRoot ? 'workspace' : 'global',
+                consumer: 'vscode',
+                autoStart: false,
+            });
+            const effective = prepared.context;
+            n8nBaseUrl = effective.apiBaseUrl ?? effective.host;
+        } catch {
+            // fallback
+        }
+    }
+
+    if (!n8nBaseUrl) {
+        const credentials = getN8nConfig();
+        n8nBaseUrl = credentials.host;
+    }
+
+    if (!n8nBaseUrl) {
+        throw new Error('n8n instance host URL is not configured.');
+    }
+
+    const base = n8nBaseUrl.endsWith('/') ? n8nBaseUrl : `${n8nBaseUrl}/`;
+    return new URL(`workflow/${encodeURIComponent(workflow.id)}`, base).toString();
+}
+
+async function openWorkflowInBrowser(workflow: IWorkflowStatus): Promise<void> {
+    if (!workflow.id) {
+        vscode.window.showWarningMessage(`Cannot open workflow "${workflow.name}": no remote ID is available.`);
+        return;
+    }
+
+    try {
+        const url = await resolveWorkflowBrowserUrl(workflow);
+        outputChannel.appendLine(`[n8n] Opening workflow ${workflow.id} in external browser: ${url}`);
+        const opened = await openExternalNavigation(
+            {
+                url,
+                reason: 'workflow-browser',
+                source: {
+                    workflowId: workflow.id,
+                    panelKind: 'workflow-tree',
+                },
+            },
+            {
+                outputChannel,
+                logPrefix: '[n8n]',
+            },
+        );
+        if (!opened) {
+            vscode.window.showWarningMessage(`Could not open workflow in external browser: ${url}`);
+        }
+    } catch (e: any) {
+        vscode.window.showErrorMessage(`Failed to open workflow in browser: ${e.message}`);
     }
 }
 

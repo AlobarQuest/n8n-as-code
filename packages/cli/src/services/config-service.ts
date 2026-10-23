@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
+import type { IFolderSession } from '../core/types.js';
 import {
     N8nConfigurationService,
     N8nRuntimeOrchestrator,
@@ -9,9 +11,29 @@ import {
     type N8nInstanceVerificationStatus,
     type UpsertGlobalN8nInstanceInput,
 } from '@n8n-as-code/n8n-manager-core';
-import { N8nApiClient, createCanonicalInstanceIdentifier, createInstanceIdentifier, createInstanceUserIdentifier, isCanonicalInstanceIdentifier, isCanonicalInstanceUserIdentifier, isCanonicalUserInstanceIdentifier, resolveInstanceIdentifier, resolveN8nIdentity as resolveN8nIdentityFromApi, type IResolvedN8nIdentity } from '../core/index.js';
+// Deep imports, not the `../core/index.js` barrel: the barrel re-exports sync-manager
+// (-> transformer -> ts-morph) and preflight-node-validator (-> @n8n-as-code/skills),
+// ~547ms of module graph that every command running an action pays through the
+// telemetry postAction hook, including `skills node-info`.
+import { N8nApiClient } from '../core/services/n8n-api-client.js';
+import {
+    createCanonicalInstanceIdentifier,
+    createInstanceIdentifier,
+    createInstanceUserIdentifier,
+    isCanonicalInstanceIdentifier,
+    isCanonicalInstanceUserIdentifier,
+    isCanonicalUserInstanceIdentifier,
+} from '../core/services/directory-utils.js';
+import {
+    resolveInstanceIdentifier,
+    resolveN8nIdentity as resolveN8nIdentityFromApi,
+    type IResolvedN8nIdentity,
+} from '../core/services/instance-identifier.js';
 
 const DEFAULT_SYNC_FOLDER = 'workflows';
+
+/** Identity of the ephemeral environment derived from a workspace `.env`. */
+const ENV_FILE_ENVIRONMENT_ID = 'env-file';
 
 type GlobalN8nInstanceWithUserIdentifier = GlobalN8nInstance & { instanceUserIdentifier?: string };
 type UpsertGlobalN8nInstanceInputWithUserIdentifier = UpsertGlobalN8nInstanceInput & { instanceUserIdentifier?: string };
@@ -87,15 +109,45 @@ export type IEnvironmentTarget = IManagedEnvironmentTarget | IExternalEnvironmen
 
 export type IWorkspaceNativeMcpMode = 'assist' | 'direct';
 
+/**
+ * Native MCP usage level — the single knob that decides how much of the
+ * instance's MCP server n8n-as-code uses. Cumulative ladder:
+ *   0  no MCP at all (bundled ontology only)
+ *   1  schema sync: refresh the local per-instance ontology overlay
+ *   2  + live `validate_node_config` at push time (authoritative gate)
+ *   3  + read-only discovery wrappers (workflows/nodes/executions)
+ * A configured environment without an explicit level behaves as level 3
+ * (maximum backward compatibility with the legacy assist surface).
+ */
+export type IWorkspaceNativeMcpLevel = 1 | 2 | 3;
+
 export interface IWorkspaceNativeMcpConfig {
     enabled?: boolean;
     url?: string;
     mode?: IWorkspaceNativeMcpMode;
+    level?: IWorkspaceNativeMcpLevel;
     timeoutMs?: number;
     allowRemoteExposure?: boolean;
     allowExecutionData?: boolean;
     requireSyncBack?: boolean;
     tokenConfigured?: boolean;
+}
+
+export const NATIVE_MCP_LEVEL_NAMES: Record<number, string> = {
+    0: 'off (bundled ontology only)',
+    1: 'schema sync (instance ontology overlay)',
+    2: 'live validation at push',
+    3: 'read-only discovery',
+};
+
+export function effectiveNativeMcpLevel(nativeMcp: IWorkspaceNativeMcpConfig | undefined, envOverride?: string): number {
+    if (envOverride !== undefined && /^\d+$/.test(envOverride.trim())) {
+        const parsed = Number.parseInt(envOverride.trim(), 10);
+        if (Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 3) return parsed;
+    }
+    if (!nativeMcp || nativeMcp.enabled === false) return 0;
+    if (nativeMcp.level === 1 || nativeMcp.level === 2 || nativeMcp.level === 3) return nativeMcp.level;
+    return nativeMcp.enabled || nativeMcp.url ? 3 : 0;
 }
 
 export interface IWorkspaceEnvironment {
@@ -540,9 +592,121 @@ export class ConfigService {
         return this.findInstanceTarget(this.ensureV4WorkspaceConfig(), nameOrId);
     }
 
+    /**
+     * The workspace `.env`, when it can stand in for a configured environment.
+     *
+     * `N8N_HOST` is n8n's own server *bind* variable, so a stock docker-compose `.env`
+     * carries a bare hostname. Only an absolute http(s) URL can address an instance, and
+     * silently deriving `localhost` from one would fail later with no explanation.
+     */
+    private readEnvFileEnvironment(): { host: string; apiKey?: string; mcpToken?: string; mcpUrl?: string } | undefined {
+        const envFile = path.join(this.workspaceRoot, '.env');
+        if (!fs.existsSync(envFile)) return undefined;
+
+        let parsed: Record<string, string>;
+        try {
+            parsed = dotenv.parse(fs.readFileSync(envFile));
+        } catch {
+            return undefined;
+        }
+
+        const host = (parsed.N8N_BASE_URL || parsed.N8N_HOST || '').trim();
+        if (!host) return undefined;
+
+        try {
+            const url = new URL(host);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+        } catch {
+            return undefined;
+        }
+
+        return {
+            host,
+            apiKey: cleanOptional(parsed.N8N_API_KEY),
+            mcpToken: cleanOptional(parsed.N8N_NATIVE_MCP_TOKEN),
+            mcpUrl: cleanOptional(parsed.N8N_NATIVE_MCP_URL),
+        };
+    }
+
+    /** True when a command can resolve an environment, including one derived from `.env`. */
+    hasResolvableEnvironment(): boolean {
+        return this.isWorkspaceConfigV4() || this.readEnvFileEnvironment() !== undefined;
+    }
+
+    /**
+     * Derive an environment from the workspace `.env`, persisting nothing.
+     *
+     * Deliberately ephemeral. `resolveEnvironment` is a read with call sites as incidental
+     * as a VS Code tree refresh; writing `n8nac-config.json` and copying the API key and
+     * native MCP token into the global secret store from there would make a read
+     * side-effectful, and would duplicate secrets the `.env` already holds. It also keeps
+     * the derived environment disposable: delete the `.env` and it is gone, with no
+     * leftover entry that `env remove` would have to clean up.
+     */
+    private resolveEnvironmentFromEnvFile(): IResolvedWorkspaceEnvironment | undefined {
+        const envFile = this.readEnvFileEnvironment();
+        if (!envFile) return undefined;
+
+        const target = {
+            id: ENV_FILE_ENVIRONMENT_ID,
+            name: 'default',
+            kind: 'external-instance',
+            url: envFile.host,
+        } as IEnvironmentTarget;
+
+        const environment = {
+            id: ENV_FILE_ENVIRONMENT_ID,
+            name: 'default',
+            syncSlug: 'default',
+            environmentTargetId: ENV_FILE_ENVIRONMENT_ID,
+            workflowsPath: DEFAULT_SYNC_FOLDER,
+            projectId: 'personal',
+            projectName: 'Personal',
+            ...(envFile.mcpToken
+                ? { nativeMcp: { enabled: true, level: 2, url: envFile.mcpUrl } as IWorkspaceNativeMcpConfig }
+                : {}),
+        } as IWorkspaceEnvironment;
+
+        const resolved = this.resolveEnvironmentFromTarget(environment, target, 'workspace-default');
+        return {
+            ...resolved,
+            apiKey: envFile.apiKey,
+            apiKeyAvailable: Boolean(envFile.apiKey),
+            apiKeySource: envFile.apiKey ? 'env' : 'missing',
+            // `resolveEnvironmentFromTarget` derives the status before the key from the
+            // `.env` is attached, so it reported `missing-api-key` for a workspace holding
+            // one. `env status` hid that behind its probe; `--json`, `--no-probe` and every
+            // programmatic reader saw the wrong answer.
+            accessStatus: this.deriveAccessStatus({
+                host: resolved.host,
+                apiKey: envFile.apiKey,
+                projectId: environment.projectId,
+                projectName: environment.projectName,
+            }),
+            nativeMcp: resolved.nativeMcp
+                ? { ...resolved.nativeMcp, tokenConfigured: Boolean(envFile.mcpToken) }
+                : undefined,
+        } as IResolvedWorkspaceEnvironment;
+    }
+
     resolveEnvironment(environmentNameOrId?: string): IResolvedWorkspaceEnvironment {
         const config = this.readWorkspaceConfigFile();
         if (config.environments.length === 0) {
+            const fromEnvFile = this.resolveEnvironmentFromEnvFile();
+            if (fromEnvFile) {
+                // A `.env` defines exactly one environment. Returning it for any name asked
+                // for meant `--env prod` reported success against the `.env` host: the
+                // caller believed it had switched instance and had not.
+                const requested = environmentNameOrId;
+                if (requested && requested !== fromEnvFile.environment.id && requested !== fromEnvFile.environment.name) {
+                    throw new Error(
+                        `Environment '${requested}' does not exist. This workspace is configured by its .env file, `
+                        + `which defines a single environment ('${fromEnvFile.environment.name}'). `
+                        + 'Run `n8nac env add` to define named environments.',
+                    );
+                }
+                return fromEnvFile;
+            }
             throw new Error('No workspace environment is configured. Run `n8nac env add` first.');
         }
         const environment = environmentNameOrId
@@ -1018,6 +1182,18 @@ export class ConfigService {
     }
 
     getNativeMcpToken(environmentNameOrId?: string): string | undefined {
+        // The `.env`-derived environment persists nothing, so the secret store holds no
+        // entry for it — its token lives in the file it was derived from. Reading only the
+        // store reported the token as configured on `env status` while every consumer that
+        // asked for it got `undefined`.
+        if (this.readWorkspaceConfigFile().environments.length === 0) {
+            const envFile = this.readEnvFileEnvironment();
+            if (envFile) {
+                // Throws when the caller named something else, as every other read does.
+                this.resolveEnvironment(environmentNameOrId);
+                return envFile.mcpToken;
+            }
+        }
         const environment = environmentNameOrId
             ? this.findEnvironment(this.ensureV4WorkspaceConfig(), environmentNameOrId)
             : this.resolveEnvironment().environment;
@@ -1035,6 +1211,57 @@ export class ConfigService {
             this.manager.deleteApiKey(this.nativeMcpSecretKey(environment.id));
         } catch {
             this.manager.deleteApiKey(this.nativeMcpSecretKey(environmentNameOrId));
+        }
+    }
+
+    // ── Folder-sync session tokens ────────────────────────────────────────────
+    // Folder reads over the internal /rest API need session (cookie) auth. The
+    // resulting cookie is stored per target through the SAME secret store as API
+    // keys and MCP tokens (it honours N8N_MANAGER_HOME, so it is isolated in tests
+    // and lives with the other secrets rather than in a separate file). The
+    // password is never persisted.
+
+    /** Canonical target id (accepts a name or id); falls back to the input if unresolvable. */
+    private resolveFolderSessionKey(targetId: string): string {
+        try {
+            return this.getInstanceTarget(targetId).id;
+        } catch {
+            return targetId;
+        }
+    }
+
+    private folderSessionSecretKey(targetId: string): string {
+        return `folder-session:${targetId}`;
+    }
+
+    saveFolderSession(targetId: string, session: IFolderSession): void {
+        const key = this.resolveFolderSessionKey(targetId);
+        this.manager.saveApiKey(this.folderSessionSecretKey(key), JSON.stringify(session));
+    }
+
+    getFolderSession(targetId: string): IFolderSession | undefined {
+        const key = this.resolveFolderSessionKey(targetId);
+        const raw = this.manager.getApiKey(this.folderSessionSecretKey(key));
+        if (!raw) return undefined;
+        try {
+            const parsed = JSON.parse(raw);
+            // Validate the shape: a tampered/wrong value must not reach callers that
+            // assume `cookie` is a string (e.g. resolveFolderAuth's cookie normaliser).
+            if (parsed && typeof parsed === 'object' && typeof parsed.cookie === 'string') {
+                return parsed as IFolderSession;
+            }
+        } catch {
+            // fall through to undefined
+        }
+        return undefined;
+    }
+
+    clearFolderSession(targetId: string): void {
+        const key = this.resolveFolderSessionKey(targetId);
+        try {
+            this.manager.deleteApiKey(this.folderSessionSecretKey(key));
+        } catch {
+            // best-effort: nothing stored, or the secret store is unavailable
         }
     }
 
@@ -1292,10 +1519,13 @@ export class ConfigService {
         }
         const timeoutMs = this.parseOptionalPositiveInteger(input.timeoutMs, 'nativeMcp.timeoutMs');
         const mode: IWorkspaceNativeMcpMode | undefined = input.mode === 'direct' ? 'direct' : input.mode === 'assist' ? 'assist' : undefined;
+        const rawLevel = input.level;
+        const level: IWorkspaceNativeMcpLevel | undefined = rawLevel === 1 || rawLevel === 2 || rawLevel === 3 ? rawLevel : undefined;
         return stripUndefined({
             enabled: typeof input.enabled === 'boolean' ? input.enabled : url ? true : undefined,
             url,
             mode,
+            level,
             timeoutMs,
             allowRemoteExposure: typeof input.allowRemoteExposure === 'boolean' ? input.allowRemoteExposure : undefined,
             allowExecutionData: typeof input.allowExecutionData === 'boolean' ? input.allowExecutionData : undefined,

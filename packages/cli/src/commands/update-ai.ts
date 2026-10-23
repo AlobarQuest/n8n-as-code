@@ -1,8 +1,7 @@
-import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs';
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, delimiter, basename } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import {
     N8nApiClient,
@@ -10,7 +9,7 @@ import {
     WorkspaceSetupService,
 } from '../core/index.js';
 import type { AiContextGenerator as AiContextGeneratorInstance } from '@n8n-as-code/skills';
-import { ConfigService } from '../services/config-service.js';
+import { ConfigService, effectiveNativeMcpLevel } from '../services/config-service.js';
 import dotenv from 'dotenv';
 
 const N8NAC_DEV_CONFIG_FILENAMES = [
@@ -51,6 +50,17 @@ function readAgentsMdVersion(projectRoot: string): string | undefined {
     return match?.[1];
 }
 
+/** Reads the native MCP level stamp embedded in an existing AGENTS.md, or undefined if absent. */
+function readAgentsMdLevel(projectRoot: string): number | undefined {
+    const agentsMdPath = join(projectRoot, 'AGENTS.md');
+    if (!existsSync(agentsMdPath)) return undefined;
+    const content = readFileSync(agentsMdPath, 'utf8');
+    const match = content.match(/<!--\s*n8nac-mcp-level:\s*(\d+)\s*-->/);
+    if (!match) return undefined;
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 function quoteShellArg(value: string): string {
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -59,22 +69,55 @@ function hasWorkspaceDevCommand(projectRoot: string): boolean {
     return N8NAC_DEV_CONFIG_FILENAMES.some((filename) => existsSync(join(projectRoot, filename)));
 }
 
-function inferLocalDevCliCommand(projectRoot: string): string | undefined {
+/**
+ * True when a plain shell resolves `n8nac` on its own.
+ * PATH entries ending in node_modules/.bin are ignored: those are injected by our own
+ * npx / npm-script invocation and will not exist in the agent's shell afterwards.
+ */
+function isN8nacOnShellPath(): boolean {
+    const extensions = process.platform === 'win32'
+        ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';')
+        : [''];
+    return (process.env.PATH || process.env.Path || '').split(delimiter).some((dir) =>
+        dir
+        && basename(dir) !== '.bin'
+        && extensions.some((ext) => existsSync(join(dir, `n8nac${ext}`))));
+}
+
+function inferFastCliCommand(projectRoot: string): string | undefined {
     if (process.env.N8NAC_COMMAND || hasWorkspaceDevCommand(projectRoot)) {
         return undefined;
     }
 
     const entrypoint = process.argv[1] ? resolve(process.argv[1]) : '';
-    if (!entrypoint || entrypoint.includes(`${join('node_modules', '')}`)) {
+    if (entrypoint
+        && !entrypoint.includes(`${join('node_modules', '')}`)
+        && entrypoint.endsWith(join('packages', 'cli', 'dist', 'index.js'))
+        && existsSync(entrypoint)) {
+        return `node ${quoteShellArg(entrypoint)}`;
+    }
+
+    // Prefer the installed binary: npx pays npm's own startup on every invocation.
+    return isN8nacOnShellPath() ? 'n8nac' : undefined;
+}
+
+/**
+ * Resolve the effective native MCP usage level of the active workspace
+ * environment for generated AI context. Never throws — update-ai must not
+ * fail when no environment is pinned yet.
+ */
+function resolveActiveNativeMcpLevel(projectRoot: string): { level: number; environmentName?: string } | undefined {
+    try {
+        const configService = new ConfigService(projectRoot);
+        const requested = process.env.N8NAC_ENVIRONMENT?.trim() || undefined;
+        const resolved = configService.resolveEnvironment(requested);
+        return {
+            level: effectiveNativeMcpLevel(resolved.environment.nativeMcp, process.env.N8NAC_NATIVE_MCP_LEVEL),
+            environmentName: resolved.environmentName,
+        };
+    } catch {
         return undefined;
     }
-    if (!entrypoint.endsWith(join('packages', 'cli', 'dist', 'index.js'))) {
-        return undefined;
-    }
-    if (!existsSync(entrypoint)) {
-        return undefined;
-    }
-    return `node ${quoteShellArg(entrypoint)}`;
 }
 
 function inferLocalDevManagerCommand(): string | undefined {
@@ -109,24 +152,13 @@ async function createAiContextGenerator(): Promise<AiContextGeneratorInstance> {
 }
 
 export class UpdateAiCommand {
-    constructor(private program: Command) {
-        this.program
-            .command('update-ai')
-            .description('Update AI Context (AGENTS.md and snippets)')
-            .option('--n8n-version <version>', 'n8n instance version to write when API discovery is unavailable')
-            .option('--cli-version <version>', 'n8nac CLI dist tag to use in generated AI context')
-            .option('--cli-cmd <command>', 'Override the generated n8nac command in AGENTS.md (for local dev builds)')
-            .option('--manager-cmd <command>', 'Override the generated n8n-manager command in AGENTS.md (for local dev builds)')
-            .option('--silent', 'Suppress all output (used for background refresh)')
-            .action(async (options) => {
-                await this.run(options);
-            });
-    }
 
     /**
      * Fire-and-forget check: if AGENTS.md is missing a version stamp or the stamped version
      * differs from the installed n8nac CLI version, silently regenerates AI context files.
-     * Safe to call at the top of any command — never throws.
+     * The native MCP level stamp is part of the fingerprint: a level change regenerates
+     * even when the CLI version is unchanged. Safe to call at the top of any
+     * command — never throws.
      */
     static async checkAndRefreshIfStale(projectRoot: string): Promise<void> {
         try {
@@ -136,9 +168,15 @@ export class UpdateAiCommand {
             const stampedVersion = readAgentsMdVersion(projectRoot);
             const currentVersion = getCliVersion();
 
-            if (currentVersion && stampedVersion === currentVersion) return; // already up-to-date
+            if (currentVersion && stampedVersion === currentVersion) {
+                const stampedLevel = readAgentsMdLevel(projectRoot);
+                const currentLevel = resolveActiveNativeMcpLevel(projectRoot)?.level;
+                // No level comparison possible (no pinned environment, or a
+                // pre-fingerprint file with nothing configured): keep the file.
+                if (currentLevel === undefined || stampedLevel === currentLevel) return;
+            }
 
-            await new UpdateAiCommand(new Command()).run({ silent: true, projectRoot });
+            await new UpdateAiCommand().run({ silent: true, projectRoot });
         } catch {
             // Never surface background refresh errors to the user
         }
@@ -183,10 +221,12 @@ export class UpdateAiCommand {
             const distTag = typeof options.cliVersion === 'string' && options.cliVersion.trim()
                 ? options.cliVersion.trim()
                 : getDistTag();
+            const nativeMcp = resolveActiveNativeMcpLevel(projectRoot);
             await aiContextGenerator.generate(projectRoot, version, distTag, {
-                cliCommandOverride: options.cliCmd || inferLocalDevCliCommand(projectRoot),
+                cliCommandOverride: options.cliCmd || inferFastCliCommand(projectRoot),
                 managerCommandOverride: options.managerCmd || inferLocalDevManagerCommand(),
                 cliVersion: getCliVersion(),
+                nativeMcp,
             } as Parameters<AiContextGeneratorInstance['generate']>[3] & { managerCommandOverride?: string });
             if (!silent) console.log(chalk.green('   ✅ AI context files created.'));
 

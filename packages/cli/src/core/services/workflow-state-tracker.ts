@@ -8,6 +8,7 @@ import { WorkflowSyncStatus, IWorkflowStatus, IWorkflow, IWorkflowDrift } from '
 import { IWorkflowState, IInstanceState } from './state-manager.js';
 import { FolderPathResolver, sanitizePathSegment } from './folder-path-resolver.js';
 import { listWorkflowFilesRecursive, normalizeWorkflowRelativePath, workflowRelativePathToAbsolute } from './workflow-path-utils.js';
+import { RestFolderSource, RestFolderAuth, isLoopbackHost } from './rest-folder-source.js';
 
 const WINDOWS_RESERVED_FILENAMES = new Set([
     'CON',
@@ -57,6 +58,27 @@ export class WorkflowStateTracker extends EventEmitter {
     private stateFilePath: string;
     private folderSync: boolean;
     private warnedFolderMetadataUnavailable = false;
+    /**
+     * Optional session-auth source for the folder hierarchy, used because n8n's
+     * public workflow API never reports which folder a workflow is in. Present only
+     * when folderSync is on and host + a folder-login token/creds are configured.
+     */
+    private folderSource?: RestFolderSource;
+    /**
+     * Memoised session folder load, tagged with the generation it was started for.
+     * Callers within one generation share the request; each refreshRemoteState()
+     * bumps {@link folderGeneration} so folder moves and new folders are observed on
+     * the next read. A failed load clears the entry (only if still current) so it
+     * stays retryable rather than being cached as a permanent miss.
+     */
+    private sessionFolders?: { generation: number; promise: Promise<{ resolver: FolderPathResolver; parentMap: Map<string, string> } | undefined> };
+    private folderGeneration = 0;
+    /**
+     * When true, a configured session source that fails to load degrades to a flat
+     * pull with a warning instead of failing the folder-aware pull. Off by default
+     * (fail closed): opt in with N8NAC_FOLDER_ALLOW_FLAT_FALLBACK.
+     */
+    private folderSessionAllowFlatFallback = false;
     private isConnected: boolean = true;
     /** True during the first refreshRemoteState() call — suppresses status broadcasts */
     private isInitialRemoteLoad: boolean = false;
@@ -88,6 +110,9 @@ export class WorkflowStateTracker extends EventEmitter {
             ignoredTags: string[];
             projectId: string;      // Project scope filter
             folderSync?: boolean;
+            host?: string;          // Target instance URL (needed for session folderSync)
+            folderAuth?: RestFolderAuth; // Session credentials/token (opt-in; pull uses public API without them)
+            folderSessionAllowFlatFallback?: boolean; // degrade to flat pull if the session source fails
         }
     ) {
         super();
@@ -97,6 +122,29 @@ export class WorkflowStateTracker extends EventEmitter {
         this.ignoredTags = options.ignoredTags;
         this.projectId = options.projectId;
         this.folderSync = options.folderSync ?? false;
+        this.folderSessionAllowFlatFallback = options.folderSessionAllowFlatFallback ?? false;
+        // When folderSync is on and session creds are provided, prefer reading
+        // folders over /rest when folders are licensed on the instance.
+        // Plain HTTP over non-loopback hosts is blocked to prevent credential leaks,
+        // unless explicitly opted into with N8NAC_ALLOW_INSECURE_HTTP=1.
+        if (this.folderSync && options.host && options.folderAuth && this.projectId) {
+            let isInsecureHttp = false;
+            try {
+                const parsedUrl = new URL(options.host);
+                isInsecureHttp = parsedUrl.protocol === 'http:' && !isLoopbackHost(parsedUrl.hostname);
+            } catch {
+                isInsecureHttp = true;
+            }
+
+            if (isInsecureHttp && process.env.N8NAC_ALLOW_INSECURE_HTTP !== '1') {
+                console.warn(
+                    `[WorkflowStateTracker] Refusing to pass folderAuth to RestFolderSource over non-loopback plain HTTP (${options.host}). ` +
+                    `Use HTTPS or loopback, or set N8NAC_ALLOW_INSECURE_HTTP=1 to allow cleartext transmission.`,
+                );
+            } else {
+                this.folderSource = new RestFolderSource(options.host, this.projectId, options.folderAuth);
+            }
+        }
         this.stateFilePath = path.join(this.directory, '.n8n-state.json');
 
         // Restore persisted mappings immediately so 'pull' and other commands can find workflows
@@ -185,6 +233,9 @@ export class WorkflowStateTracker extends EventEmitter {
             }
         }
 
+        const state = this.loadState();
+        let stateChanged = false;
+
         for (const [id, claimants] of idClaims) {
             // Remove the stale filename entry for this ID before setting the scan result
             const staleFilename = this.idToFileMap.get(id);
@@ -202,6 +253,15 @@ export class WorkflowStateTracker extends EventEmitter {
             }
             this.fileToIdMap.set(winner, id);
             this.idToFileMap.set(id, winner);
+
+            if (state.workflows[id] && state.workflows[id].filename !== winner) {
+                state.workflows[id].filename = winner;
+                stateChanged = true;
+            }
+        }
+
+        if (stateChanged) {
+            this.saveState(state);
         }
 
         // Explicit id: undefined/null means "create a new remote workflow". Do not
@@ -219,7 +279,7 @@ export class WorkflowStateTracker extends EventEmitter {
         // Recovery path: if a tracked file lost its decorator ID after a manual rewrite,
         // reconnect it using the last known filename hint from state.
         const claimedIds = new Set(idClaims.keys());
-        const state = this.loadState();
+
         for (const { filename, content } of fileContents) {
             if (content?.id) continue;
             if (content?.[EXPLICIT_WORKFLOW_ID_FIELD]) continue;
@@ -272,6 +332,10 @@ export class WorkflowStateTracker extends EventEmitter {
      * spurious "Change detected" messages in the VSCode extension and CLI output.
      */
     public async refreshRemoteState() {
+        // Bump the generation so the session folder tree is re-read on this refresh
+        // (folder moves and new folders are observed); an in-flight load from a
+        // previous generation is superseded rather than discarded mid-flight.
+        this.folderGeneration += 1;
         // Suppress broadcasts during the very first remote load (populating cache from scratch).
         // Subsequent calls (user-triggered fetch/refresh) will still broadcast normally.
         const isFirstLoad = this.remoteIds.size === 0;
@@ -281,6 +345,8 @@ export class WorkflowStateTracker extends EventEmitter {
             const remoteWorkflows = await this.client.getAllWorkflows(this.projectId);
             this.isConnected = true;
 
+            const folderResolver = await this.createFolderResolver(remoteWorkflows);
+
             // Update remoteIds and names (ID is the unique key; name is for display only)
             this.remoteIds.clear();
             this.remoteNames.clear();
@@ -289,8 +355,8 @@ export class WorkflowStateTracker extends EventEmitter {
             this.remoteParentFolderIds.clear();
             this.remoteFolderPaths.clear();
 
-            const folderResolver = await this.createFolderResolver(remoteWorkflows);
             const state = this.loadState();
+            let stateChanged = false;
 
             // Build set of already-assigned filenames to prevent collisions
             const assignedFilenames = new Set<string>();
@@ -326,6 +392,10 @@ export class WorkflowStateTracker extends EventEmitter {
                             filename = undefined;
                         }
                     }
+                }
+
+                if (filename && !fs.existsSync(workflowRelativePathToAbsolute(this.directory, filename))) {
+                    filename = undefined;
                 }
 
                 // If no valid mapping, scan local files to discover/rediscover the workflow
@@ -372,9 +442,18 @@ export class WorkflowStateTracker extends EventEmitter {
                     this.fileToIdMap.set(filename, wf.id);
                 }
 
+                if (state.workflows[wf.id] && filename && state.workflows[wf.id].filename !== filename) {
+                    state.workflows[wf.id].filename = filename;
+                    stateChanged = true;
+                }
+
                 // In lightweight mode, we don't fetch full content or compute hashes here.
                 // We just broadcast that the workflow exists remotely.
                 this.broadcastStatus(filename, wf.id);
+            }
+
+            if (stateChanged) {
+                this.saveState(state);
             }
 
             // Prune remoteHashes and timestamps for deleted workflows
@@ -428,19 +507,19 @@ export class WorkflowStateTracker extends EventEmitter {
         let filename = this.idToFileMap.get(workflowId);
 
         // If workflow not tracked yet (first sync of local-only workflow),
-        // scan directory to find the file with this ID
-        if (!filename) {
-            const files = listWorkflowFilesRecursive(this.directory);
-            for (const file of files) {
-                const filePath = workflowRelativePathToAbsolute(this.directory, file);
-                const content = this.readJsonFile(filePath);
-                if (content?.id === workflowId) {
-                    filename = file;
-                    // Initialize tracking for this workflow
-                    this.fileToIdMap.set(filename, workflowId);
-                    this.idToFileMap.set(workflowId, filename);
-                    break;
+        // or if filename points to a file that does not exist on disk,
+        // scan directory to find the real file with this ID
+        if (!filename || !fs.existsSync(workflowRelativePathToAbsolute(this.directory, filename))) {
+            const staleFilename = filename;
+            filename = this.findFilenameByWorkflowId(workflowId);
+
+            if (filename) {
+                if (staleFilename && staleFilename !== filename) {
+                    this.fileToIdMap.delete(staleFilename);
+                    this.localHashes.delete(staleFilename);
                 }
+                this.fileToIdMap.set(filename, workflowId);
+                this.idToFileMap.set(workflowId, filename);
             }
 
             if (!filename) {
@@ -719,13 +798,63 @@ export class WorkflowStateTracker extends EventEmitter {
     }
 
     /**
+     * Lazily load (and cache) the folder hierarchy over the session-auth `/rest`
+     * source. Returns undefined when no source is configured or the load fails,
+     * so callers fall back to the public-API path. The workflow→parentFolderId
+     * map fills the gap the public workflows API leaves (it omits that field).
+     */
+    private async ensureSessionFolders(): Promise<{ resolver: FolderPathResolver; parentMap: Map<string, string> } | undefined> {
+        if (!this.folderSource) return undefined;
+        const generation = this.folderGeneration;
+        if (!this.sessionFolders || this.sessionFolders.generation !== generation) {
+            this.sessionFolders = { generation, promise: this.loadSessionFolders() };
+        }
+        const entry = this.sessionFolders;
+        try {
+            return await entry.promise;
+        } catch (error: any) {
+            // Clear only if still the current entry, so a newer generation's in-flight
+            // load isn't discarded; a later read then retries rather than caching the miss.
+            if (this.sessionFolders === entry) this.sessionFolders = undefined;
+            const reason = error?.message || String(error);
+            if (this.folderSessionAllowFlatFallback) {
+                this.warnFolderMetadataUnavailable(
+                    `session folder source failed (${reason}); pulling flat because N8NAC_FOLDER_ALLOW_FLAT_FALLBACK is set`,
+                );
+                return undefined;
+            }
+            // Fail closed: the user explicitly configured a session source, so a
+            // silent flat pull (which would produce a large, wrong diff on reconcile)
+            // is worse than stopping with a clear, actionable error. The tag lets the
+            // resilient single-workflow path (updateSingleRemoteState) re-raise it too.
+            const failClosed: any = new Error(
+                `folderSync session folder source failed: ${reason}. ` +
+                `Re-run \`n8nac env auth folder-login <env>\`, or set ` +
+                `N8NAC_FOLDER_ALLOW_FLAT_FALLBACK=1 to allow a flat pull.`,
+            );
+            failClosed.folderSessionFailClosed = true;
+            throw failClosed;
+        }
+    }
+
+    private async loadSessionFolders(): Promise<{ resolver: FolderPathResolver; parentMap: Map<string, string> } | undefined> {
+        const { folders, workflowParentFolderId, licenseUnavailableReason } = await this.folderSource!.load();
+        if (licenseUnavailableReason) {
+            this.warnFolderMetadataUnavailable(licenseUnavailableReason);
+            return undefined;
+        }
+        return { resolver: new FolderPathResolver(folders), parentMap: workflowParentFolderId };
+    }
+
+    /**
      * Builds the resolver that turns a remote workflow's folder into local path
      * segments — when n8n tells us what that folder is.
      *
-     * As of n8n 2.32 it does not: `parentFolderId` is declared `writeOnly` in the
+     * As of n8n 2.32 the public API does not, so pull falls back to this path and
+     * lays workflows out flat: `parentFolderId` is declared `writeOnly` in the
      * public API spec, the read handlers never load the `parentFolder` relation,
-     * and no endpoint maps workflows to folders. This holds on every edition,
-     * Enterprise included, so pull lays workflows out flat and this returns null.
+     * and no endpoint maps workflows to folders. (The session-auth `/rest` source
+     * above, when configured, sidesteps this and reconstructs nested paths.)
      *
      * The detection is deliberately based on the payload rather than a version
      * check: the day a workflow read carries folder fields, nested pulls start
@@ -733,6 +862,23 @@ export class WorkflowStateTracker extends EventEmitter {
      */
     private async createFolderResolver(remoteWorkflows: IWorkflow[]): Promise<FolderPathResolver | null> {
         if (!this.folderSync) return null;
+
+        // Creds-first: when a session folder source is configured, use it. It
+        // supplies the workflow→folder link the public API omits, so we backfill
+        // parentFolderId onto the workflow objects before path resolution.
+        const session = await this.ensureSessionFolders();
+        if (session) {
+            for (const wf of remoteWorkflows) {
+                const folderId = session.parentMap.get(wf.id);
+                if (folderId) wf.parentFolderId = folderId;
+            }
+            return session.resolver;
+        }
+
+        // Public-API path (no login): only works if a workflow read happens to
+        // carry folder fields. Current n8n omits them on every edition, so this
+        // normally yields a flat layout — kept for forward-compat and any
+        // deployment where workflow reads do expose folder metadata.
         const hasWorkflowFolderFields = remoteWorkflows.some((workflow) =>
             workflow.parentFolderId !== undefined || workflow.parentFolder?.id,
         );
@@ -751,6 +897,13 @@ export class WorkflowStateTracker extends EventEmitter {
     private warnFolderMetadataUnavailable(reason?: string): void {
         if (this.warnedFolderMetadataUnavailable) return;
         this.warnedFolderMetadataUnavailable = true;
+        if (reason?.includes('reports no folder support') || reason?.includes('no folder API')) {
+            console.warn(
+                `[WorkflowStateTracker] folderSync is enabled but ${reason}. ` +
+                `Workflows will be pulled flat without folder assignment.`,
+            );
+            return;
+        }
         console.warn(
             `[WorkflowStateTracker] folderSync is enabled, but n8n's public API does not report which folder a workflow is in${reason ? ` (${reason})` : ''}. ` +
             `Pull keeps workflows flat; push still mirrors your local folders onto n8n.`,
@@ -1332,6 +1485,39 @@ export class WorkflowStateTracker extends EventEmitter {
             });
             const hash = await WorkflowTransformerAdapter.hashWorkflow(tsCode);
 
+            // Resolve folder placement BEFORE mutating any cache: if a session source
+            // is configured and fails, ensureSessionFolders() throws the fail-closed
+            // error, and this workflow's cache must be left untouched (all-or-nothing)
+            // rather than half-applied (known-remote + fresh hash but no folder data).
+            let parentFolderId = remoteWf.parentFolderId ?? remoteWf.parentFolder?.id ?? null;
+            let folderPath: string[] = [];
+            if (this.folderSync) {
+                // Creds-first: backfill the folder link from the session source
+                // (the public workflow API omits parentFolderId).
+                const session = await this.ensureSessionFolders();
+                if (session) {
+                    const folderId = session.parentMap.get(remoteWf.id) ?? null;
+                    if (folderId) {
+                        remoteWf.parentFolderId = folderId;
+                        parentFolderId = folderId;
+                    }
+                    folderPath = session.resolver.getPathForWorkflow(remoteWf);
+                } else if (parentFolderId && typeof this.client.getFolders === 'function') {
+                    try {
+                        // Same project-id caveat as the push path: the folder list endpoint
+                        // needs a real id, not the `personal` placeholder.
+                        const folderProjectId = typeof this.client.resolveFolderProjectId === 'function'
+                            ? await this.client.resolveFolderProjectId(this.projectId)
+                            : this.projectId;
+                        const resolver = new FolderPathResolver(await this.client.getFolders(folderProjectId ?? this.projectId));
+                        folderPath = resolver.getPathForWorkflow(remoteWf);
+                    } catch (error: any) {
+                        this.warnFolderMetadataUnavailable(error?.message);
+                    }
+                }
+            }
+
+            // All cache mutations happen together, after the fallible reads above.
             this.remoteHashes.set(remoteWf.id, hash);
             if (remoteWf.updatedAt) {
                 this.remoteTimestamps.set(remoteWf.id, remoteWf.updatedAt);
@@ -1345,21 +1531,6 @@ export class WorkflowStateTracker extends EventEmitter {
             // Store active and archived flags
             this.remoteActive.set(remoteWf.id, remoteWf.active === true);
             this.remoteArchived.set(remoteWf.id, remoteWf.isArchived === true);
-            const parentFolderId = remoteWf.parentFolderId ?? remoteWf.parentFolder?.id ?? null;
-            let folderPath: string[] = [];
-            if (this.folderSync && parentFolderId && typeof this.client.getFolders === 'function') {
-                try {
-                    // Same project-id caveat as the push path: the folder list endpoint
-                    // needs a real id, not the `personal` placeholder.
-                    const folderProjectId = typeof this.client.resolveFolderProjectId === 'function'
-                        ? await this.client.resolveFolderProjectId(this.projectId)
-                        : this.projectId;
-                    const resolver = new FolderPathResolver(await this.client.getFolders(folderProjectId ?? this.projectId));
-                    folderPath = resolver.getPathForWorkflow(remoteWf);
-                } catch (error: any) {
-                    this.warnFolderMetadataUnavailable(error?.message);
-                }
-            }
             this.remoteParentFolderIds.set(remoteWf.id, parentFolderId);
             this.remoteFolderPaths.set(remoteWf.id, folderPath);
 
@@ -1389,6 +1560,9 @@ export class WorkflowStateTracker extends EventEmitter {
                 this.broadcastStatus(filename, remoteWf.id);
             }
         } catch (error) {
+            // A configured session folder source that failed must fail the pull, not be
+            // swallowed here — otherwise `pull <id>` would silently lay the workflow out flat.
+            if ((error as any)?.folderSessionFailClosed) throw error;
             console.error(`[WorkflowStateTracker] Failed to update single remote state for ${remoteWf.id}:`, error);
         }
     }

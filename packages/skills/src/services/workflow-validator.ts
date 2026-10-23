@@ -1,4 +1,5 @@
 import { NodeSchemaProvider } from './node-schema-provider.js';
+import { resolveCustomNodesConfig } from './custom-nodes-config.js';
 import { TypeScriptParser, WorkflowBuilder } from '@n8n-as-code/transformer';
 
 export interface ValidationResult {
@@ -26,8 +27,17 @@ export interface ValidationWarning {
 export class WorkflowValidator {
   private provider: NodeSchemaProvider;
 
+  /**
+   * @param customIndexPath - Path to the technical node index (defaults to the bundled asset)
+   * @param customNodesPath - Path to the custom-node sidecar. When omitted it is resolved from
+   *   the current project (n8nac-config.json / n8nac-custom-nodes.json), so embedders such as
+   *   `n8nac push --verify` honour the sidecar without wiring it themselves.
+   */
   constructor(customIndexPath?: string, customNodesPath?: string) {
-    this.provider = new NodeSchemaProvider(customIndexPath, customNodesPath);
+    this.provider = new NodeSchemaProvider(
+      customIndexPath,
+      customNodesPath ?? resolveCustomNodesConfig().resolvedPath
+    );
   }
 
   /**
@@ -137,9 +147,6 @@ export class WorkflowValidator {
         continue; // Can't validate further without type
       }
 
-      // Extract node name from type (e.g., "n8n-nodes-base.httpRequest" -> "httpRequest")
-      const nodeTypeName = node.type.split('.').pop();
-
       // Detect if this is a community node
       // Community nodes formats:
       // - @scope/n8n-nodes-* (where scope is NOT 'n8n')
@@ -151,8 +158,10 @@ export class WorkflowValidator {
         (node.type.startsWith('@') && !node.type.startsWith('@n8n/')) ||
         (node.type.startsWith('n8n-nodes-') && !node.type.startsWith('n8n-nodes-base.') && !node.type.startsWith('n8n-nodes-langchain.'));
 
-      // Check if node type exists
-      const nodeSchema = this.provider.getNodeSchema(nodeTypeName);
+      // Check if node type exists. Look up by full type — the provider falls back to the
+      // short name itself, and truncating here would resolve "@n8n/n8n-nodes-langchain.code"
+      // to the unrelated "n8n-nodes-base.code" schema.
+      const nodeSchema = this.provider.getNodeSchema(node.type);
       if (!nodeSchema) {
         if (isCommunityNode) {
           // Community nodes: emit a warning but don't fail validation
@@ -230,6 +239,7 @@ export class WorkflowValidator {
     // 4. Validate connections
     if (workflow.connections) {
       this.validateConnections(workflow.connections, nodeMap, errors, warnings);
+      this.validateFallbackModels(workflow.connections, nodeMap, errors);
     }
 
     return {
@@ -243,49 +253,237 @@ export class WorkflowValidator {
     return typeof value === 'string' && value.includes('{{');
   }
 
-  private getConditionParamValue(
-    condParamName: string,
-    nodeParams: Record<string, any>,
-    rootParams: Record<string, any>
-  ): any {
-    if (condParamName.startsWith('/')) {
-      return rootParams[condParamName.slice(1)];
-    }
-    return Object.prototype.hasOwnProperty.call(nodeParams, condParamName)
-      ? nodeParams[condParamName]
-      : rootParams[condParamName];
+  private hasOwnProperty(obj: any, key: string): boolean {
+    return obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  private nodeVersionOf(node?: any): number {
+    const rawVersion = node?.typeVersion ?? node?.version ?? 1;
+    return typeof rawVersion === 'number' ? rawVersion : (Number(rawVersion) || 1);
   }
 
   /**
-   * Check whether a schema property's displayOptions conditions are satisfied
-   * by the current parameters. If no displayOptions defined -> always shown.
+   * Whether a schema property entry applies to the node's typeVersion.
+   * The technical index stores one property entry per (version, condition)
+   * combination, so entries whose `@version` condition excludes the current
+   * typeVersion must not influence validation of this node.
    */
-  private isPropertyDisplayed(
-    prop: any,
+  private isVersionRelevant(prop: any, node?: any): boolean {
+    const version = this.nodeVersionOf(node);
+    const show = prop?.displayOptions?.show;
+    if (show && this.hasOwnProperty(show, '@version')) {
+      return this.matchesVersionCondition(show['@version'], version);
+    }
+    const hide = prop?.displayOptions?.hide;
+    if (hide && this.hasOwnProperty(hide, '@version')) {
+      return !this.matchesVersionCondition(hide['@version'], version);
+    }
+    return true;
+  }
+
+  /**
+   * Resolve the effective value of a display-condition parameter, mirroring
+   * the n8n server's own gating engine (validate_node_config /
+   * generate-zod-schemas + display-options.ts):
+   *
+   * - `/`-prefixed condition names always reference the node's root parameters
+   *   and never fall back to schema defaults (the server generator skips `/`
+   *   and `@` keys when building its `defaults` map), so a missing root
+   *   parameter hides every dependent variant — e.g. `builtInTools` without an
+   *   explicit `responsesApiEnabled: true`;
+   * - plain names reference the current parameter level first (nested fixed
+   *   collection items), then the root level — and fall back to the schema
+   *   default of the version-relevant property variant when unset;
+   * - resource-locator values (`{ __rl: true, ... }`) are unwrapped to their
+   *   inner `value` before comparison.
+   */
+  private effectiveConditionValue(
+    condParamName: string,
     nodeParams: Record<string, any>,
-    rootParams: Record<string, any> = nodeParams
+    rootParams: Record<string, any>,
+    levelProps?: any[],
+    rootProps?: any[],
+    node?: any
+  ): any {
+    const isRoot = condParamName.startsWith('/');
+    const name = isRoot ? condParamName.slice(1) : condParamName;
+    const levelParams = isRoot ? rootParams : nodeParams;
+
+    let value = this.hasOwnProperty(levelParams, name) ? levelParams[name] : undefined;
+    if (value === undefined && !isRoot && this.hasOwnProperty(rootParams, name)) {
+      value = rootParams[name];
+    }
+    if (value === undefined && !isRoot) {
+      for (const props of [levelProps, rootProps]) {
+        if (!Array.isArray(props)) continue;
+        const candidate = props.find((p: any) => p?.name === name && this.isVersionRelevant(p, node));
+        if (candidate && candidate.default !== undefined) {
+          value = candidate.default;
+          break;
+        }
+      }
+    }
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) &&
+        (value as any).__rl === true && this.hasOwnProperty(value, 'value')) {
+      return (value as any).value;
+    }
+    return value;
+  }
+
+  private matchesVersionCondition(condition: any, nodeVersion: number): boolean {
+    if (Array.isArray(condition)) {
+      return condition.some((c) => this.evalVersionCondition(c, nodeVersion));
+    }
+    return this.evalVersionCondition(condition, nodeVersion);
+  }
+
+  private evalVersionCondition(cond: any, nodeVersion: number): boolean {
+    if (typeof cond === 'number') {
+      return nodeVersion === cond;
+    }
+    if (typeof cond === 'string') {
+      const num = Number(cond);
+      return !isNaN(num) ? nodeVersion === num : String(nodeVersion) === cond;
+    }
+    if (!cond || typeof cond !== 'object') {
+      return false;
+    }
+
+    const rule = (cond._cnd && typeof cond._cnd === 'object') ? cond._cnd : cond;
+
+    if (rule.eq !== undefined && !(nodeVersion === Number(rule.eq))) return false;
+    if (rule.lte !== undefined && !(nodeVersion <= Number(rule.lte))) return false;
+    if (rule.gte !== undefined && !(nodeVersion >= Number(rule.gte))) return false;
+    if (rule.lt !== undefined && !(nodeVersion < Number(rule.lt))) return false;
+    if (rule.gt !== undefined && !(nodeVersion > Number(rule.gt))) return false;
+
+    return true;
+  }
+
+  /**
+   * Narrow a property variant's displayOptions the way n8n's own schema
+   * generator does (narrowDisplayOptionsByDisabled): disabled states are
+   * subtracted from `show`, and disabled-only keys are merged into `hide`.
+   * When a `show` key is left with no settable values the variant is FULLY
+   * DISABLED (returns null) and must be dropped before any evaluation —
+   * e.g. the expression-prefilled memory `sessionKey` under
+   * `sessionIdType=fromInput`, which exists only to render a disabled UI
+   * field. This is why the live server only allows `sessionKey` when
+   * `sessionIdType="customKey"` and agent `text` when `promptType="define"`.
+   */
+  private narrowedDisplayOptions(prop: any): { show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> } | null {
+    const displayOptions = prop?.displayOptions;
+    const disabledShow = prop?.disabledOptions?.show;
+    if (!disabledShow || typeof disabledShow !== 'object' || Array.isArray(disabledShow)) {
+      return displayOptions ?? {};
+    }
+
+    const narrowedShow: Record<string, unknown[]> = {};
+    const mergedHide: Record<string, unknown[]> = {};
+    for (const [key, values] of Object.entries((displayOptions?.hide ?? {}) as Record<string, unknown[]>)) {
+      mergedHide[key] = [...(Array.isArray(values) ? values : [])];
+    }
+
+    for (const [key, values] of Object.entries((displayOptions?.show ?? {}) as Record<string, unknown[]>)) {
+      const disabledValues = (disabledShow as Record<string, unknown[]>)[key];
+      if (!disabledValues) {
+        narrowedShow[key] = values;
+        continue;
+      }
+      const remaining = (Array.isArray(values) ? values : []).filter(
+        (v) => !(disabledValues as unknown[]).some((d) => JSON.stringify(d) === JSON.stringify(v))
+      );
+      if (remaining.length === 0) {
+        return null;
+      }
+      narrowedShow[key] = remaining;
+    }
+
+    for (const [key, values] of Object.entries(disabledShow as Record<string, unknown[]>)) {
+      if (displayOptions?.show && key in displayOptions.show) continue;
+      const existing = mergedHide[key] ?? [];
+      const seen = new Set(existing.map((v) => JSON.stringify(v)));
+      for (const v of (Array.isArray(values) ? values : [])) {
+        if (!seen.has(JSON.stringify(v))) existing.push(v);
+      }
+      mergedHide[key] = existing;
+    }
+
+    const result: { show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> } = {};
+    if (Object.keys(narrowedShow).length > 0) result.show = narrowedShow;
+    if (Object.keys(mergedHide).length > 0) result.hide = mergedHide;
+    return result;
+  }
+
+  /**
+   * Check whether ALREADY-NARROWED display conditions are satisfied by the
+   * effective parameter values (see {@link effectiveConditionValue}).
+   * If no displayOptions defined -> always shown.
+   *
+   * `levelProps` / `rootProps` carry the property lists whose defaults may
+   * satisfy non-slash condition parameters at the current level / at the node
+   * root.
+   */
+  private matchesDisplayConditions(
+    displayOptions: { show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> },
+    nodeParams: Record<string, any>,
+    rootParams: Record<string, any> = nodeParams,
+    node?: any,
+    levelProps?: any[],
+    rootProps?: any[]
   ): boolean {
-    const hide = prop.displayOptions?.hide;
+    const nodeVersion = this.nodeVersionOf(node);
+
+    const hide = displayOptions?.hide;
     if (hide && typeof hide === 'object') {
       for (const [condParamName, hiddenValues] of Object.entries(hide)) {
+        if (condParamName === '@version') {
+          if (this.matchesVersionCondition(hiddenValues, nodeVersion)) return false;
+          continue;
+        }
         if (!Array.isArray(hiddenValues)) continue;
-        const actualValue = this.getConditionParamValue(condParamName, nodeParams, rootParams);
-        if (this.isExpressionValue(actualValue)) continue;
+        const actualValue = this.effectiveConditionValue(condParamName, nodeParams, rootParams, levelProps, rootProps, node);
         if (hiddenValues.includes(actualValue)) return false;
       }
     }
 
-    const show = prop.displayOptions?.show;
+    const show = displayOptions?.show;
     if (!show || typeof show !== 'object') return true;
 
     for (const [condParamName, allowedValues] of Object.entries(show)) {
+      if (condParamName === '@version') {
+        if (!this.matchesVersionCondition(allowedValues, nodeVersion)) return false;
+        continue;
+      }
       if (!Array.isArray(allowedValues)) continue;
-      const actualValue = this.getConditionParamValue(condParamName, nodeParams, rootParams);
-      // Skip expression values — can't evaluate at static validation time
+      const actualValue = this.effectiveConditionValue(condParamName, nodeParams, rootParams, levelProps, rootProps, node);
+      // An expression cannot be resolved statically: never treat the property as
+      // hidden on its account (it may satisfy the condition at run time).
       if (this.isExpressionValue(actualValue)) continue;
       if (!allowedValues.includes(actualValue)) return false;
     }
     return true;
+  }
+
+  /**
+   * Check whether a schema property's displayOptions conditions are satisfied
+   * by the effective parameter values: the variant is first narrowed by its
+   * `disabledOptions` (fully disabled variants are never displayed), then its
+   * remaining conditions are evaluated. If no displayOptions defined ->
+   * always shown.
+   */
+  private isPropertyDisplayed(
+    prop: any,
+    nodeParams: Record<string, any>,
+    rootParams: Record<string, any> = nodeParams,
+    node?: any,
+    levelProps?: any[],
+    rootProps?: any[],
+    _depth = 0
+  ): boolean {
+    const narrowed = this.narrowedDisplayOptions(prop);
+    if (narrowed === null) return false;
+    return this.matchesDisplayConditions(narrowed, nodeParams, rootParams, node, levelProps, rootProps);
   }
 
   /**
@@ -298,7 +496,7 @@ export class WorkflowValidator {
     warnings: ValidationWarning[]
   ): void {
     const schemaProps = nodeSchema.schema?.properties || nodeSchema.properties || [];
-    this.validateParameterSet(node, schemaProps, node.parameters, node.parameters, `nodes[${node.name}].parameters`, errors, warnings, true);
+    this.validateParameterSet(node, schemaProps, node.parameters, node.parameters, `nodes[${node.name}].parameters`, errors, warnings, true, schemaProps);
 
     // Cross-check: when both 'resource' and 'operation' are set, verify the operation
     // is valid for the specific resource (some operations only exist for certain resources)
@@ -310,24 +508,156 @@ export class WorkflowValidator {
       typeof operationValue === 'string' && !operationValue.includes('{{')
     ) {
       const scopedOpProps = schemaProps.filter(
-        (p: any) => p.name === 'operation' && p.type === 'options' &&
+        (p: any) => p.name === 'operation' && (p.type === 'options' || p.type === 'multiOptions') &&
           Array.isArray(p.displayOptions?.show?.resource) &&
-          p.displayOptions.show.resource.includes(resourceValue)
+          p.displayOptions.show.resource.includes(resourceValue) &&
+          this.isPropertyDisplayed(p, node.parameters, node.parameters, node, schemaProps, schemaProps)
       );
       if (scopedOpProps.length > 0) {
         const scopedValues = new Set<string | number>(
           scopedOpProps.flatMap((p: any) => p.options?.map((o: any) => o.value) ?? [])
         );
-        if (!scopedValues.has(operationValue)) {
+        const opPath = `nodes[${node.name}].parameters.operation`;
+        if (!scopedValues.has(operationValue) && !errors.some(e => e.path === opPath)) {
           const validOps = [...scopedValues].join(', ');
           errors.push({
             type: 'error',
             nodeId: node.id,
             nodeName: node.name,
             message: `Operation "${operationValue}" is not valid for resource "${resourceValue}". n8n will show "Could not find property option". Valid operations for resource "${resourceValue}": [${validOps}].`,
-            path: `nodes[${node.name}].parameters.operation`,
+            path: opPath,
           });
         }
+      }
+    }
+  }
+
+  private literalConditionText(value: any): string {
+    if (typeof value === 'string') return JSON.stringify(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (value === null) return 'null';
+    return String(value);
+  }
+
+  private variantConditionText(displayOptions: { show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> } | null | undefined): string {
+    const conds: string[] = [];
+    const render = (map: Record<string, unknown[]> | undefined, negated: boolean) => {
+      for (const [key, values] of Object.entries(map ?? {})) {
+        if (key === '@version') continue;
+        if (!Array.isArray(values)) continue;
+        for (const value of values) {
+          conds.push(negated
+            ? `${key}!==${this.literalConditionText(value)}`
+            : `${key}=${this.literalConditionText(value)}`);
+        }
+      }
+    };
+    render(displayOptions?.show, false);
+    render(displayOptions?.hide, true);
+    return conds.join(', ');
+  }
+
+  private parameterDottedPath(path: string, paramKey: string): string {
+    // Convert the internal `nodes[<name>].parameters...` path into the server-style
+    // `parameters...` path used in validation messages.
+    const dotted = path.replace(/^nodes\[[^\]]*\]\.parameters/, 'parameters');
+    return `${dotted}.${paramKey}`;
+  }
+
+  private hiddenParametersMessage(dottedPath: string, failingVariants: Array<{ show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> }>): string {
+    const label = `Field "${dottedPath}": This field is only allowed`;
+    const descriptions = failingVariants.map((v) => this.variantConditionText(v)).filter(Boolean);
+    if (descriptions.length === 0) {
+      return `${label} under the current parameter values.`;
+    }
+    if (descriptions.length === 1) {
+      return `${label} when: ${descriptions[0]}`;
+    }
+    return `${label} when one of: ${descriptions.map((d) => `(${d})`).join(' or ')}`;
+  }
+
+  /**
+   * Server-equivalent presence gating: n8n's `validate_node_config` rejects any
+   * parameter that is explicitly present while every schema variant of that
+   * parameter is hidden by the current display conditions (evaluated against
+   * effective values, i.e. explicit parameters first, schema defaults second).
+   */
+  private validateNoHiddenParameters(
+    node: any,
+    schemaProps: any[],
+    params: Record<string, any>,
+    rootParams: Record<string, any>,
+    path: string,
+    rootSchemaProps: any[],
+    errors: ValidationError[]
+  ): void {
+    for (const paramKey of Object.keys(params)) {
+      const variants = schemaProps.filter((p: any) => p.name === paramKey);
+      if (variants.length === 0) continue; // unknown parameters are reported as warnings
+
+      const relevant = variants.filter((p: any) => this.isVersionRelevant(p, node));
+      if (relevant.length === 0) continue; // parameter belongs to another typeVersion
+
+      // Narrow each variant (disabled-only states are dropped, exactly like the
+      // server's generated schemas) and keep only the ruled-in ones.
+      const narrowed = relevant
+        .map((p: any) => this.narrowedDisplayOptions(p))
+        .filter((d): d is { show?: Record<string, unknown[]>; hide?: Record<string, unknown[]> } => d !== null);
+      const shown = narrowed.filter((d) =>
+        this.matchesDisplayConditions(d, params, rootParams, node, schemaProps, rootSchemaProps)
+      );
+      if (shown.length > 0) continue;
+
+      errors.push({
+        type: 'error',
+        nodeId: node.id,
+        nodeName: node.name,
+        message: this.hiddenParametersMessage(this.parameterDottedPath(path, paramKey), narrowed),
+        path: `${path}.${paramKey}`,
+      });
+    }
+  }
+
+  /**
+   * Resource-locator shape invariant: every explicitly-set OBJECT value of a
+   * `resourceLocator` parameter must carry `__rl: true` plus `mode`/`value` —
+   * the shape the n8n editor writes and the server's validator requires
+   * ("parameters.<x>.__rl" must be "true"). Plain strings are left alone
+   * (expressions), and non-object values cannot be valid locator payloads.
+   */
+  private validateResourceLocatorShapes(
+    node: any,
+    schemaProps: any[],
+    params: Record<string, any>,
+    rootParams: Record<string, any>,
+    path: string,
+    rootSchemaProps: any[],
+    errors: ValidationError[]
+  ): void {
+    for (const paramKey of Object.keys(params)) {
+      const value = params[paramKey];
+
+      const relevant = schemaProps.filter(
+        (p: any) => p.name === paramKey && p.type === 'resourceLocator' && this.isVersionRelevant(p, node)
+      );
+      if (relevant.length === 0) continue;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+
+      const validShape = value.__rl === true
+        && typeof value.mode === 'string' && value.mode.length > 0
+        && this.hasOwnProperty(value, 'value');
+
+      if (!validShape) {
+        const issue = value.__rl !== true
+          ? `Validation failed: "parameters.${paramKey}.__rl" must be "true".`
+          : `Validation failed: "parameters.${paramKey}" must be an object shaped like {"__rl": true, "mode": "...", "value": "..."}.`;
+        errors.push({
+          type: 'error',
+          nodeId: node.id,
+          nodeName: node.name,
+          message: issue,
+          path: `${path}.${paramKey}`,
+        });
       }
     }
   }
@@ -340,34 +670,44 @@ export class WorkflowValidator {
     path: string,
     errors: ValidationError[],
     warnings: ValidationWarning[],
-    warnUnknownParameters: boolean
+    warnUnknownParameters: boolean,
+    rootSchemaProps: any[] = schemaProps
   ): void {
-    // Only consider props whose display conditions are satisfied by the current params
-    const displayedProps = schemaProps.filter((p: any) => this.isPropertyDisplayed(p, params, rootParams));
-    const requiredProps = displayedProps.filter((p: any) => p.required === true);
+    // Only consider props whose display conditions are satisfied by the effective
+    // params (explicit values first, schema defaults for missing condition params)
+    const displayedProps = schemaProps.filter((p: any) => this.isPropertyDisplayed(p, params, rootParams, node, schemaProps, rootSchemaProps));
+    const hasUsableDefault = (p: any): boolean => p.default !== undefined && p.default !== null && p.default !== '';
+    const requiredProps = displayedProps.filter((p: any) => p.required === true && !hasUsableDefault(p));
+
+    // Server-equivalent presence gating: explicitly-set parameters that every
+    // schema variant hides are rejected by validate_node_config.
+    this.validateNoHiddenParameters(node, schemaProps, params, rootParams, path, rootSchemaProps, errors);
+    this.validateResourceLocatorShapes(node, schemaProps, params, rootParams, path, rootSchemaProps, errors);
 
     // Check required parameters
     for (const prop of requiredProps) {
       if (!(prop.name in params)) {
         errors.push({
           type: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
+          nodeId: node?.id,
+          nodeName: node?.name,
           message: `Missing required parameter: "${prop.name}"`,
           path: `${path}.${prop.name}`,
         });
       }
     }
 
-    // Check for unknown parameters (might be typos)
-    if (warnUnknownParameters) {
+    // Check for unknown parameters (might be typos).
+    // A schema declaring no properties says nothing about what is known, so flagging every
+    // parameter would be noise — that is how a custom-node override opts out of the check.
+    if (warnUnknownParameters && schemaProps.length > 0) {
       const knownParamNames = new Set(schemaProps.map((p: any) => p.name));
       for (const paramName of Object.keys(params)) {
         if (!knownParamNames.has(paramName)) {
           warnings.push({
             type: 'warning',
-            nodeId: node.id,
-            nodeName: node.name,
+            nodeId: node?.id,
+            nodeName: node?.name,
             message: `Unknown parameter: "${paramName}". This might be a typo or deprecated parameter.`,
             path: `${path}.${paramName}`,
           });
@@ -375,11 +715,11 @@ export class WorkflowValidator {
       }
     }
 
-    // Validate 'options' type parameter values
-    // Collect all valid values for each options-type property across all display conditions
+    // Validate 'options' and 'multiOptions' type parameter values
+    // Collect all valid values for each options-type property across displayed properties
     const optionValuesByPropName = new Map<string, Set<string | number>>();
-    for (const prop of schemaProps) {
-      if (prop.type === 'options' && Array.isArray(prop.options)) {
+    for (const prop of displayedProps) {
+      if ((prop.type === 'options' || prop.type === 'multiOptions') && Array.isArray(prop.options)) {
         if (!optionValuesByPropName.has(prop.name)) {
           optionValuesByPropName.set(prop.name, new Set());
         }
@@ -391,35 +731,56 @@ export class WorkflowValidator {
     }
 
     for (const [propName, validValues] of optionValuesByPropName) {
+      if (validValues.size === 0) continue;
       if (!(propName in params)) continue;
       const actualValue = params[propName];
       // Skip expressions
       if (this.isExpressionValue(actualValue)) continue;
-      if (!validValues.has(actualValue)) {
-        // Try to find which resource this operation belongs to, for a helpful hint
-        let hint = '';
-        if (propName === 'operation') {
-          const resourceValue = rootParams['resource'];
-          if (resourceValue) {
-            // Find operation props scoped to this resource
-            const scopedOps = schemaProps
-              .filter((p: any) => p.name === 'operation' && p.type === 'options' &&
-                Array.isArray(p.displayOptions?.show?.resource) &&
-                p.displayOptions.show.resource.includes(resourceValue))
-              .flatMap((p: any) => p.options?.map((o: any) => o.value) ?? []);
-            if (scopedOps.length > 0) {
-              hint = ` For resource "${resourceValue}", valid operations are: [${scopedOps.join(', ')}].`;
+      // Skip ResourceLocator values
+      if (actualValue && typeof actualValue === 'object' && actualValue.__rl === true) continue;
+
+      if (Array.isArray(actualValue)) {
+        const invalidValues = actualValue.filter(
+          (v: any) => !this.isExpressionValue(v) && !(v && typeof v === 'object' && v.__rl === true) && !validValues.has(v)
+        );
+        if (invalidValues.length > 0) {
+          const validList = [...validValues].slice(0, 20).join(', ') + (validValues.size > 20 ? ', ...' : '');
+          errors.push({
+            type: 'error',
+            nodeId: node?.id,
+            nodeName: node?.name,
+            message: `Invalid value(s) [${invalidValues.join(', ')}] for parameter "${propName}". n8n will reject this with "Could not find property option". All known values: [${validList}].`,
+            path: `${path}.${propName}`,
+          });
+        }
+      } else {
+        if (!validValues.has(actualValue)) {
+          // Try to find which resource this operation belongs to, for a helpful hint
+          let hint = '';
+          if (propName === 'operation') {
+            const resourceValue = rootParams['resource'];
+            if (resourceValue) {
+              // Find operation props scoped to this resource
+              const scopedOps = schemaProps
+                .filter((p: any) => p.name === 'operation' && (p.type === 'options' || p.type === 'multiOptions') &&
+                  Array.isArray(p.displayOptions?.show?.resource) &&
+                  p.displayOptions.show.resource.includes(resourceValue) &&
+                  this.isPropertyDisplayed(p, rootParams, rootParams, node, schemaProps, rootSchemaProps))
+                .flatMap((p: any) => p.options?.map((o: any) => o.value) ?? []);
+              if (scopedOps.length > 0) {
+                hint = ` For resource "${resourceValue}", valid operations are: [${scopedOps.join(', ')}].`;
+              }
             }
           }
+          const validList = [...validValues].slice(0, 20).join(', ') + (validValues.size > 20 ? ', ...' : '');
+          errors.push({
+            type: 'error',
+            nodeId: node?.id,
+            nodeName: node?.name,
+            message: `Invalid value "${actualValue}" for parameter "${propName}". n8n will reject this with "Could not find property option".${hint} All known values: [${validList}].`,
+            path: `${path}.${propName}`,
+          });
         }
-        const validList = [...validValues].slice(0, 20).join(', ') + (validValues.size > 20 ? ', ...' : '');
-        errors.push({
-          type: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: `Invalid value "${actualValue}" for parameter "${propName}". n8n will reject this with "Could not find property option".${hint} All known values: [${validList}].`,
-          path: `${path}.${propName}`,
-        });
       }
     }
 
@@ -451,7 +812,8 @@ export class WorkflowValidator {
               `${path}.${prop.name}.${option.name}[${index}]`,
               errors,
               warnings,
-              false
+              false,
+              rootSchemaProps
             );
           });
         } else if (optionValue && typeof optionValue === 'object') {
@@ -463,7 +825,8 @@ export class WorkflowValidator {
             `${path}.${prop.name}.${option.name}`,
             errors,
             warnings,
-            false
+            false,
+            rootSchemaProps
           );
         }
       }
@@ -570,6 +933,63 @@ export class WorkflowValidator {
       }
 
       this.validateDefaultShape(node, nestedDefault, actualValue[key], nestedPath, errors);
+    }
+  }
+
+  /**
+   * `needsFallback: true` requires a second model on ai_languageModel input 1.
+   * Without it the node fails at run time with "A Fallback Model sub-node must
+   * be connected and enabled" — and with onError: continueRegularOutput that
+   * failure is invisible, so refuse to push it.
+   */
+  private validateFallbackModels(
+    connections: any,
+    nodeMap: Map<string, any>,
+    errors: ValidationError[]
+  ): void {
+    const connectedSlots = new Set<string>();
+    for (const [sourceName, sourceConnections] of Object.entries(connections)) {
+      // A disabled model never runs, so it cannot satisfy the fallback
+      // requirement — n8n rejects it at run time with "must be connected
+      // and enabled".
+      if (nodeMap.get(sourceName)?.disabled === true) continue;
+      const roleGroups = (sourceConnections as any)?.ai_languageModel;
+      if (!Array.isArray(roleGroups)) continue;
+      for (const group of roleGroups) {
+        if (!Array.isArray(group)) {
+          // validateConnections only traverses "main"; nothing else reports
+          // malformed ai_languageModel wiring, so it must be rejected here.
+          errors.push({
+            type: 'error',
+            nodeName: sourceName,
+            message: `Malformed ai_languageModel connection group on node "${sourceName}": expected an array of connections`,
+          });
+          continue;
+        }
+        for (const conn of group) {
+          if (!conn || typeof conn !== 'object' || typeof conn.node !== 'string') {
+            errors.push({
+              type: 'error',
+              nodeName: sourceName,
+              message: `Malformed ai_languageModel connection on node "${sourceName}": missing or invalid "node" field`,
+            });
+            continue;
+          }
+          connectedSlots.add(`${conn.node}#${conn.index ?? 0}`);
+        }
+      }
+    }
+
+    for (const [name, node] of nodeMap) {
+      if (node.parameters?.needsFallback !== true) continue;
+      if (connectedSlots.has(`${name}#1`)) continue;
+      errors.push({
+        type: 'error',
+        nodeId: node.id,
+        nodeName: name,
+        message: `Node "${name}" has needsFallback: true but no fallback model on ai_languageModel input 1. Declare both models: .uses({ ai_languageModel: [this.Model.output, this.FallbackModel.output] })`,
+        path: `nodes[${name}].parameters.needsFallback`,
+      });
     }
   }
 

@@ -4,7 +4,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as tls from 'tls';
 import { resolveExtraCaCertificates, shouldVerifyServerCertificate } from './tls-certificates.js';
-import { IN8nCredentials, IWorkflow, IProject, ITag, ITriggerInfo, ITestPlan, ITestResult, TriggerType, IInferredPayload, IInferredPayloadField, IExecutionDetails, IExecutionList, IExecutionSummary, ExecutionStatus, IFolder } from '../types.js';
+import { IN8nCredentials, IWorkflow, IProject, ITag, ITriggerInfo, ITestPlan, ITestResult, TriggerType, IInferredPayload, IInferredPayloadField, IExecutionDetails, IExecutionList, IExecutionSummary, ExecutionStatus, IFolder, IPublishedVersion } from '../types.js';
 
 type AgentLookup = NonNullable<http.AgentOptions['lookup']>;
 
@@ -91,6 +91,10 @@ export class N8nApiClient {
 
         this.client = axios.create({
             baseURL: host,
+            // Fail-closed default: no API call may hang indefinitely on a
+            // stalled network (setup, push, verify). Calls that need longer
+            // pass their own explicit timeout, which takes precedence.
+            timeout: 30_000,
             headers: {
                 'X-N8N-API-KEY': this.apiKey,
                 'Content-Type': 'application/json',
@@ -272,6 +276,35 @@ export class N8nApiClient {
      * 
      * @returns Array of IProject
      */
+    /**
+     * One authenticated request, reported honestly.
+     *
+     * Every other read method here swallows failures and falls back to a placeholder,
+     * which is right for a caller that wants data and wrong for a caller that wants to
+     * know whether the credentials work at all. Only a 2xx proves the n8n public API
+     * accepted the key: 401/403 means it rejected it, and anything else — a 404 from a
+     * non-n8n host, a 5xx, an HTML error page — is not a working API no matter what
+     * answered.
+     *
+     * `timeoutMs` must actually bound the process, not just the caller's patience: a
+     * request that only loses a `Promise.race` keeps the axios socket (and the event
+     * loop) alive until the instance-level timeout fires.
+     */
+    async verifyAccess(timeoutMs?: number): Promise<{ ok: boolean; reason?: 'unauthorized' | 'unreachable' | 'api-unavailable'; status?: number }> {
+        try {
+            await this.client.get('/api/v1/projects', {
+                params: { limit: 1 },
+                ...(timeoutMs ? { timeout: timeoutMs, signal: AbortSignal.timeout(timeoutMs) } : {}),
+            });
+            return { ok: true };
+        } catch (error: any) {
+            const status = error?.response?.status;
+            if (status === 401 || status === 403) return { ok: false, reason: 'unauthorized', status };
+            if (status) return { ok: false, reason: 'api-unavailable', status };
+            return { ok: false, reason: 'unreachable' };
+        }
+    }
+
     async getProjects(): Promise<IProject[]> {
         try {
             const projects: IProject[] = [];
@@ -908,6 +941,45 @@ export class N8nApiClient {
             console.error(`Failed to delete workflow ${id}:`, error);
             return false;
         }
+    }
+
+    /**
+     * Reads which version of a workflow currently runs in production.
+     *
+     * Deliberately a bare GET: this runs on the push hot path, and the project
+     * and tag enrichment `getWorkflow` performs is irrelevant here.
+     *
+     * Throws on transport failures — the caller decides whether an unreadable
+     * pointer should block a push or only warn.
+     */
+    async getPublishedVersion(id: string): Promise<IPublishedVersion> {
+        const res = await this.client.get(`/api/v1/workflows/${id}`);
+        const workflow = (res.data ?? {}) as IWorkflow;
+
+        // n8n has exposed the pointer under both names across 2.x releases, and
+        // neither exists on 1.x. Absent means "nothing to restore", not an error.
+        const versionId = workflow.activeVersionId ?? workflow.activeVersion?.id;
+
+        return {
+            published: workflow.active === true,
+            versionId: typeof versionId === 'string' && versionId.length > 0 ? versionId : undefined,
+        };
+    }
+
+    /**
+     * Publishes a specific version of a workflow, i.e. points production at it.
+     *
+     * Without `versionId` n8n publishes the latest version — which is what
+     * `workflow activate` wants, and never what publish-restoration wants.
+     *
+     * Unlike {@link activateWorkflow} this throws: callers use it to undo an
+     * unwanted publish, and a silent failure there leaves production running
+     * content the user never released.
+     */
+    async publishWorkflowVersion(id: string, versionId?: string): Promise<IWorkflow | null> {
+        const body = versionId ? { versionId } : {};
+        const res = await this.client.post(`/api/v1/workflows/${id}/activate`, body);
+        return res.data && typeof res.data === 'object' ? (res.data as IWorkflow) : null;
     }
 
     async activateWorkflow(id: string, active: boolean): Promise<IWorkflow | null> {

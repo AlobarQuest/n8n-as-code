@@ -1,11 +1,28 @@
 import { BaseCommand, captureEmittedErrors, formatConnectionError } from './base.js';
-import { SyncManager, WorkflowSyncStatus } from '../core/index.js';
+import { SyncManager, WorkflowSyncStatus, type IPushPublishReport } from '../core/index.js';
+import { PreflightNodeValidator, type PreflightNodeValidatorOptions } from '../core/index.js';
+import { SchemaOverlayManager } from '../core/index.js';
 import { WorkflowValidator } from '@n8n-as-code/skills';
+import { effectiveNativeMcpLevel } from '../services/config-service.js';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
 
 export class SyncCommand extends BaseCommand {
+
+    /**
+     * Guards the level-0 validation notice: `push --verify` runs pushOne and
+     * verifyRemote on the same instance, and printing the same warning twice
+     * reads as two distinct problems (agents have tried to "fix" the second
+     * one by reconfiguring MCP mid-task). One notice per process is enough.
+     */
+    private levelNoticeShown = false;
+
+    private printLevelZeroNoticeOnce(): void {
+        if (this.levelNoticeShown) return;
+        this.levelNoticeShown = true;
+        console.log(chalk.dim(`   Validated against the bundled schema only (native MCP level 0 — discouraged, the instance may differ). Connect the instance MCP for instance-exact validation: n8nac native-mcp configure --level 1.`));
+    }
 
     async pullOne(workflowId: string): Promise<void> {
         const syncConfig = await this.getSyncConfig();
@@ -39,7 +56,7 @@ export class SyncCommand extends BaseCommand {
                 console.log(chalk.yellow(`To resolve the conflict you can either:`));
                 console.log(`  n8nac resolve ${workflowId} --mode keep-current`);
                 console.log(`  n8nac resolve ${workflowId} --mode keep-incoming`);
-                return;
+                process.exit(1);
             }
         }
 
@@ -53,7 +70,7 @@ export class SyncCommand extends BaseCommand {
         }
     }
 
-    async pushOne(filename: string): Promise<string | undefined> {
+    async pushOne(filename: string, options?: { draft?: boolean }): Promise<string | undefined> {
         const syncConfig = await this.getSyncConfig();
         const syncManager = new SyncManager(this.client, syncConfig);
         const lastEmittedError = captureEmittedErrors(syncManager);
@@ -69,10 +86,12 @@ export class SyncCommand extends BaseCommand {
         
         let workflowId: string | undefined;
         let basename: string | undefined;
+        let absolutePath: string | undefined;
         
         try {
             const pushTarget = syncManager.resolvePushTarget(filename);
             basename = pushTarget.filename;
+            absolutePath = pushTarget.absolutePath;
             workflowId = syncManager.getWorkflowIdForFilename(pushTarget.filename);
         } catch (e) {
             // If normalization fails, let the actual push() call throw the clean error
@@ -88,14 +107,68 @@ export class SyncCommand extends BaseCommand {
                 console.log(chalk.yellow(`To resolve the conflict you can either:`));
                 console.log(`  n8nac resolve ${workflowId} --mode keep-current`);
                 console.log(`  n8nac resolve ${workflowId} --mode keep-incoming`);
-                return undefined;
+                process.exit(1);
+            }
+        }
+
+        // Pre-push node validation. The bundled schema (local, always available)
+        // rejects node configurations n8n itself refuses — and when the instance
+        // exposes its MCP server, the instance's own schema is consulted first and
+        // is authoritative. A workflow whose nodes the instance rejects must never
+        // be deployed — n8n would store it, but it would be broken in the UI and
+        // fail at run time. Escalate to "push anyway" with N8NAC_PUSH_SKIP_VALIDATION=1.
+        const level = effectiveNativeMcpLevel(this.activeEnvironment?.nativeMcp, process.env.N8NAC_NATIVE_MCP_LEVEL);
+        if (absolutePath) {
+            const outcome = await this.runPrePushValidation(absolutePath, level);
+            if (outcome) {
+                if (!outcome.valid) {
+                    if (basename && workflowId) {
+                        await syncManager.recordWorkflowPushRejected(basename, workflowId, 'Pre-push node validation failed');
+                    }
+                    console.log(chalk.red(`\n❌ ${outcome.issues.length} node(s) would be rejected by n8n. Push aborted before any remote change.\n`));
+                    for (const issue of outcome.issues) {
+                        const nodeLabel = issue.name ? chalk.bold(`[${issue.name}]`) : '';
+                        console.log(chalk.red(`  • ${nodeLabel} ${chalk.dim(issue.type)}`));
+                        for (const err of issue.errors) {
+                            console.log(chalk.red(`      - ${err.message}`));
+                        }
+                    }
+                    if (outcome.serverUnavailableReason) {
+                        console.log(chalk.dim(`\n  (${outcome.serverUnavailableReason})`));
+                    }
+                    console.log(chalk.yellow('\n  Fix the reported node parameters, then push again.'));
+                    process.exit(1);
+                }
+                if (outcome.serverUnavailableReason) {
+                    // The workflow is valid against the bundled schema, but the
+                    // instance-side check that was attempted could not run. When the
+                    // user explicitly configured instance validation this is a real
+                    // signal; on the automatic probe it stays a quiet hint.
+                    const notice = `Instance node validation unavailable (${outcome.serverUnavailableReason}); validated against the bundled schema.`;
+                    console.warn(chalk.yellow(`⚠  ${notice}`));
+                }
             }
         }
 
         const spinner = ora(`Pushing workflow ${filename}...`).start();
+
+        // The engine emits this before the update lands, so the "this goes live"
+        // notice is printed while it is still news rather than after the fact.
+        let publishReport: IPushPublishReport | undefined;
+        syncManager.on('publishState', (report: IPushPublishReport) => {
+            publishReport = report;
+            if (report.outcome !== 'goes-live') return;
+            spinner.info(chalk.yellow(`⚠  "${filename}" is published — this push releases it to production.`));
+            spinner.start(`Pushing workflow ${filename}...`);
+        });
+
         try {
-            const finalWorkflowId = await syncManager.push(filename);
+            const finalWorkflowId = await syncManager.push(filename, { draft: options?.draft === true });
             spinner.succeed(chalk.green(`✔ Pushed workflow ${filename}.`));
+            if (level === 0) {
+                this.printLevelZeroNoticeOnce();
+            }
+            this.reportPublishState(publishReport, finalWorkflowId);
             return finalWorkflowId;
         } catch (e: any) {
             if (e.message.includes('modified in the n8n UI')) {
@@ -105,8 +178,8 @@ export class SyncCommand extends BaseCommand {
                 if (workflowId) {
                     console.log(`  n8nac resolve ${workflowId} --mode keep-current`);
                     console.log(`  n8nac resolve ${workflowId} --mode keep-incoming`);
-                    return undefined;
                 }
+                process.exit(1);
             }
             if (e.message.includes('archived on n8n') || e.message.includes('isArchived')) {
                 spinner.stop();
@@ -116,6 +189,29 @@ export class SyncCommand extends BaseCommand {
             }
             spinner.fail(formatConnectionError('Push failed', lastEmittedError() ?? e));
             process.exit(1);
+        }
+    }
+
+    /**
+     * States what the push did to production, once it is done.
+     *
+     * `goes-live` is absent on purpose: it was already announced before the
+     * update, which is the only moment where saying it is useful.
+     */
+    private reportPublishState(report: IPushPublishReport | undefined, workflowId: string | undefined): void {
+        switch (report?.outcome) {
+            case 'restores':
+                console.log(chalk.dim(`📝 Draft updated — production still runs version ${report.versionId}.`));
+                console.log(chalk.dim(`   Release it by pushing again without --draft.`));
+                break;
+            case 'not-published':
+                console.log(chalk.dim(`📝 This workflow is not published, so nothing changed in production.`));
+                break;
+            case 'unknown':
+                console.log(chalk.yellow(`⚠  Could not read the published version before pushing.`));
+                console.log(chalk.yellow(`   If this workflow was published, production now runs the pushed content.`));
+                if (workflowId) console.log(chalk.dim(`   Check its version history in the n8n UI (workflow ${workflowId}).`));
+                break;
         }
     }
 
@@ -238,8 +334,88 @@ export class SyncCommand extends BaseCommand {
             console.log(chalk.red('❌ Workflow has errors that will cause problems in n8n.'));
             console.log(chalk.dim('   Fix the issues locally, then push again.'));
         }
+        if (effectiveNativeMcpLevel(this.activeEnvironment?.nativeMcp, process.env.N8NAC_NATIVE_MCP_LEVEL) === 0) {
+            this.printLevelZeroNoticeOnce();
+        }
 
         return result.valid;
+    }
+
+    /**
+     * Validate a local workflow file before anything is written to the instance.
+     *
+     * Validation is driven by the environment's native MCP usage level
+     * (cumulative ladder, see `IWorkspaceNativeMcpLevel`):
+     *   level 0 — bundled ontology only, no MCP call at all;
+     *   level 1 — refresh the per-instance schema overlay from `get_node_types`
+     *             (lazy per node type, TTL-cached), then validate locally against
+     *             the merged bundled+overlay schema — economical across pushes;
+     *   level ≥ 2 — validate live against the instance's `validate_node_config`
+     *             (authoritative, immune to bundled-schema drift).
+     *
+     * Returns null when validation is skipped (opt-out env var, or the workflow
+     * file cannot be compiled locally — the push itself then reports the real
+     * compile error).
+     */
+    private async runPrePushValidation(absolutePath: string, level?: number): Promise<Awaited<ReturnType<PreflightNodeValidator['validateFile']>> | null> {
+        if (/^(1|true|yes|on)$/i.test(process.env.N8NAC_PUSH_SKIP_VALIDATION || '')) {
+            return null;
+        }
+
+        const environment = this.activeEnvironment;
+        const host = environment?.host || this.config?.host;
+        const nativeMcp = environment?.nativeMcp;
+        const resolvedLevel = level ?? effectiveNativeMcpLevel(nativeMcp, process.env.N8NAC_NATIVE_MCP_LEVEL);
+
+        const validatorOptions: PreflightNodeValidatorOptions = {};
+
+        if (resolvedLevel >= 1 && host) {
+            const endpoint = nativeMcp?.url || `${host.replace(/\/+$/, '')}/mcp-server/http`;
+            let token: string | undefined;
+            try {
+                token = this.configService.getNativeMcpToken(environment?.environmentId) || environment?.apiKey;
+            } catch {
+                token = environment?.apiKey;
+            }
+            const timeoutMs = nativeMcp?.timeoutMs ?? 10000;
+
+            if (resolvedLevel >= 2) {
+                validatorOptions.endpoint = endpoint;
+                validatorOptions.token = token;
+                validatorOptions.timeoutMs = timeoutMs;
+            } else {
+                // Level 1: schema overlay, validated locally. The overlay path is
+                // deterministic; the beforeValidate hook fetches whatever is
+                // missing or expired for this workflow's node types.
+                const cacheDir = environment?.workflowsPath || this.config?.directory;
+                const overlay = new SchemaOverlayManager({ endpoint, token, timeoutMs, cacheDir });
+                let overlayUsable = true;
+                validatorOptions.customNodesPath = () => (overlayUsable ? overlay.providerFilePath : undefined);
+                validatorOptions.beforeValidate = async (workflow) => {
+                    try {
+                        const { failed } = await overlay.ensureForTypes(SchemaOverlayManager.collectNodeTypes(workflow));
+                        if (failed.length > 0) {
+                            console.warn(chalk.yellow(`⚠  Schema overlay incomplete (${failed.join(', ')} not described by the instance); those nodes fall back to the bundled schema.`));
+                        }
+                    } catch (error: any) {
+                        // Overlay refresh failed (unreachable/unauthorised):
+                        // fall back to the bundled schema for this push, and surface it.
+                        overlayUsable = false;
+                        console.warn(chalk.yellow(`⚠  Schema overlay refresh unavailable (${error?.message || error}); validating against the bundled schema.`));
+                    }
+                };
+            }
+        }
+
+        const validator = new PreflightNodeValidator(validatorOptions);
+        try {
+            return await validator.validateFile(absolutePath);
+        } catch (error: any) {
+            // Compilation failure: the push below fails identically and reports
+            // the error through its own path, so do not mask it here.
+            console.warn(chalk.yellow(`⚠  Pre-push validation could not compile the workflow: ${error?.message || error}`));
+            return null;
+        }
     }
 
 }

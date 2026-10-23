@@ -7,7 +7,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,7 +47,8 @@ async function getAiContextGenerator() {
   if (!fs.existsSync(distPath)) {
     throw new Error('AiContextGenerator not found in dist/. Please run "npm run build --workspace=packages/skills" first.');
   }
-  const mod = await import(distPath);
+  // pathToFileURL: on Windows an absolute path like C:\... is read as protocol "c:"
+  const mod = await import(pathToFileURL(distPath).href);
   return new mod.AiContextGenerator();
 }
 
@@ -112,10 +113,15 @@ function resolveAdapterDistTag() {
     .map(readPackageVersion)
     .filter(Boolean);
 
-  if (packageVersions.some((version) => version.includes('-next'))) {
+  if (packageVersions.some((version) => version.includes('-next') || version.includes('-rc'))) {
     return 'next';
   }
 
+  // The -rc/-next check above is the real prerelease signal. A release branch still
+  // carries stable versions until its RC bump lands, and its committed mirrors are
+  // main's stable payload, so pinning @next on the branch name alone made every push
+  // to release/** fail the committed-skills guard. Use build:adapters:branch when you
+  // explicitly want the next-channel payload.
   const branch = process.env.GITHUB_REF_NAME || process.env.BRANCH_NAME || readGitBranch();
   return branch === 'next' ? 'next' : undefined;
 }

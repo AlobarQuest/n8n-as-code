@@ -753,6 +753,55 @@ describe('N8nApiClient test workflow support', () => {
         expect(result.notes?.join(' ')).toMatch(/active\/published|runtime-state issue/i);
     });
 
+    describe('verifyAccess', () => {
+        it('accepts only a 2xx as proof the n8n public API took the key', async () => {
+            const client = new N8nApiClient({ host: 'https://n8n.local', apiKey: 'key' });
+            mockAxiosGet.mockResolvedValueOnce({ status: 200, data: { data: [] } });
+
+            await expect(client.verifyAccess()).resolves.toEqual({ ok: true });
+            expect(mockAxiosGet).toHaveBeenCalledWith('/api/v1/projects', { params: { limit: 1 } });
+        });
+
+        it('reports 401/403 as an unauthorized key', async () => {
+            const client = new N8nApiClient({ host: 'https://n8n.local', apiKey: 'key' });
+            mockAxiosGet.mockRejectedValueOnce({ response: { status: 403 } });
+
+            await expect(client.verifyAccess()).resolves.toEqual({ ok: false, reason: 'unauthorized', status: 403 });
+        });
+
+        // The regression this guards: any HTTP answer used to read as `ok`, so a non-n8n
+        // host serving a 404 or an HTML error page on the same path reported "Access: ready".
+        it('reports any other HTTP answer as an unavailable API, not as ready', async () => {
+            const client = new N8nApiClient({ host: 'https://not-n8n.local', apiKey: 'key' });
+            mockAxiosGet.mockRejectedValueOnce({ response: { status: 404 } });
+
+            await expect(client.verifyAccess()).resolves.toEqual({ ok: false, reason: 'api-unavailable', status: 404 });
+        });
+
+        it('reports a request that never answered as unreachable', async () => {
+            const client = new N8nApiClient({ host: 'https://n8n.local', apiKey: 'key' });
+            mockAxiosGet.mockRejectedValueOnce(new Error('connect ETIMEDOUT'));
+
+            await expect(client.verifyAccess()).resolves.toEqual({ ok: false, reason: 'unreachable' });
+        });
+
+        // The budget must live on the request itself: a probe that only loses a race in the
+        // caller keeps its socket open until the client-level timeout, and the command takes
+        // that long to exit.
+        it('passes the timeout into the request so it bounds the process, not the printout', async () => {
+            const client = new N8nApiClient({ host: 'https://n8n.local', apiKey: 'key' });
+            mockAxiosGet.mockResolvedValueOnce({ status: 200, data: { data: [] } });
+
+            await client.verifyAccess(5000);
+
+            expect(mockAxiosGet).toHaveBeenCalledWith('/api/v1/projects', {
+                params: { limit: 1 },
+                timeout: 5000,
+                signal: expect.any(AbortSignal),
+            });
+        });
+    });
+
     describe('getCurrentUser', () => {
         it('resolves the user from JWT sub claim and fetches details from /api/v1/users/{id}', async () => {
             // Mock JWT payload: {"sub":"user-123"}
@@ -1157,5 +1206,75 @@ describe('buildCaBundle', () => {
         vi.mocked((tlsMod as any).getCACertificates).mockImplementation(() => { throw new Error('unsupported'); });
 
         expect(buildCaBundle()).toBeUndefined();
+    });
+});
+
+describe('N8nApiClient published version', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockAxiosGet.mockReset();
+        mockAxiosPost.mockReset();
+        mockAxiosCreate.mockReset();
+        mockAxiosCreate.mockImplementation((config?: MockAxiosCreateConfig) => ({
+            defaults: { baseURL: config?.baseURL ?? '' },
+            get: mockAxiosGet,
+            post: mockAxiosPost,
+            put: mockAxiosPut,
+            delete: mockAxiosDelete,
+        }));
+    });
+
+    const client = () => new N8nApiClient({ host: 'https://n8n.local/', apiKey: 'secret' });
+
+    it('reads the pointer from the nested activeVersion object', async () => {
+        mockAxiosGet.mockResolvedValue({ data: { id: 'wf-1', active: true, activeVersion: { id: 'v-9' } } });
+
+        await expect(client().getPublishedVersion('wf-1')).resolves.toEqual({ published: true, versionId: 'v-9' });
+    });
+
+    // n8n has exposed the same pointer flat across 2.x releases, so both shapes
+    // have to resolve rather than one silently reporting "nothing to restore".
+    it('reads the pointer from the flat activeVersionId field', async () => {
+        mockAxiosGet.mockResolvedValue({ data: { id: 'wf-1', active: true, activeVersionId: 'v-9' } });
+
+        await expect(client().getPublishedVersion('wf-1')).resolves.toEqual({ published: true, versionId: 'v-9' });
+    });
+
+    it('reports an inactive workflow as not published', async () => {
+        mockAxiosGet.mockResolvedValue({ data: { id: 'wf-1', active: false, activeVersion: null } });
+
+        await expect(client().getPublishedVersion('wf-1')).resolves.toEqual({ published: false, versionId: undefined });
+    });
+
+    // n8n 1.x payloads carry `active` but no version pointer at all.
+    it('reports no version id when the instance exposes none', async () => {
+        mockAxiosGet.mockResolvedValue({ data: { id: 'wf-1', active: true } });
+
+        await expect(client().getPublishedVersion('wf-1')).resolves.toEqual({ published: true, versionId: undefined });
+    });
+
+    it('publishes a specific version by id', async () => {
+        mockAxiosPost.mockResolvedValue({ data: { id: 'wf-1' } });
+
+        await client().publishWorkflowVersion('wf-1', 'v-9');
+
+        expect(mockAxiosPost).toHaveBeenCalledWith('/api/v1/workflows/wf-1/activate', { versionId: 'v-9' });
+    });
+
+    it('publishes the latest version when no id is given', async () => {
+        mockAxiosPost.mockResolvedValue({ data: { id: 'wf-1' } });
+
+        await client().publishWorkflowVersion('wf-1');
+
+        expect(mockAxiosPost).toHaveBeenCalledWith('/api/v1/workflows/wf-1/activate', {});
+    });
+
+    // Unlike `activateWorkflow`, this one must not swallow: callers use it to
+    // undo an unwanted publish, and a silent failure leaves production running
+    // content the user never released.
+    it('propagates failures instead of returning null', async () => {
+        mockAxiosPost.mockRejectedValue(new Error('403 Forbidden'));
+
+        await expect(client().publishWorkflowVersion('wf-1', 'v-9')).rejects.toThrow('403 Forbidden');
     });
 });

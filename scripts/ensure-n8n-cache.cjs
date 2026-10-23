@@ -59,8 +59,7 @@ function resolveConcreteReleaseTag(release) {
     return null;
 }
 
-function downloadJson(url) {
-    return new Promise((resolve, reject) => {
+function downloadJson(url) {    return new Promise((resolve, reject) => {
         const headers = {
             'User-Agent': 'n8n-as-code/1.0',
             'Accept': 'application/vnd.github+json',
@@ -121,10 +120,95 @@ function downloadJson(url) {
     });
 }
 
+/**
+ * Same contract as downloadJson but with an `Accept` header the npm registry
+ * honors (it answers 406 to the GitHub-specific `application/vnd.github+json`).
+ */
+const NPM_REQUEST_TIMEOUT_MS = 15000;
+
+function downloadNpmJson(url) {
+    return new Promise((resolve, reject) => {
+        const headers = {
+            'User-Agent': 'n8n-as-code/1.0',
+            'Accept': 'application/json',
+        };
+
+        // Bounded so a hung registry cannot stall resolveSourceTag forever.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), NPM_REQUEST_TIMEOUT_MS);
+
+        const request = https.get(url, { headers, signal: controller.signal }, (response) => {
+            let data = '';
+
+            response.on('data', chunk => data += chunk);
+            response.on('end', () => {
+                clearTimeout(timer);
+                const status = response.statusCode || 0;
+
+                if (status !== 200) {
+                    reject(new Error(`Failed to fetch ${url}: ${status}`));
+                    return;
+                }
+
+                try {
+                    resolve(JSON.parse(data));
+                } catch (error) {
+                    reject(new Error(`Failed to parse JSON from ${url}: ${error.message}`));
+                }
+            });
+        });
+
+        request.on('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+
+// n8n ships several release lines at once: `latest`/`stable` (the current
+// stable release — what GitHub `releases/latest` reports) and `next`/`beta`
+// (published to npm before promotion, and what n8n Cloud typically runs).
+// The ontology can only mirror ONE line, so the source is a pipeline input:
+//   N8N_VERSION=n8n@2.38.3     explicit version (same as N8N_STABLE_TAG)
+//   N8N_VERSION=next           npm dist-tag, resolved to its current version
+// The default stays GitHub `releases/latest` (stable).
+const NPM_DIST_TAGS = new Set(['latest', 'next', 'beta', 'rc', 'stable']);
+
+async function resolveSourceTag() {
+    const raw = (process.env.N8N_VERSION || process.env.N8N_STABLE_TAG || '').trim();
+    if (!raw) {
+        return null;
+    }
+
+    const candidate = normalizeRef(raw);
+    if (!candidate) {
+        return null;
+    }
+
+    if (NPM_DIST_TAGS.has(candidate)) {
+        try {
+            const dist = await downloadNpmJson(`https://registry.npmjs.org/n8n/${encodeURIComponent(candidate)}`);
+            const version = dist?.version;
+            if (version) {
+                const tag = normalizeRef(version);
+                // Diagnostics go to stderr: --print-tag stdout must stay machine-readable
+                // (stamp-n8n-version.cjs consumes the complete trimmed stdout as the tag).
+                console.error(`🎯 N8N_VERSION resolved npm dist-tag "${candidate}" -> ${tag}`);
+                return { tag, source: `npm-dist-tag:${candidate}` };
+            }
+        } catch (error) {
+            console.warn(`⚠️  Failed to resolve npm dist-tag "${candidate}": ${error.message}`);
+        }
+        throw new Error(`Could not resolve npm dist-tag "${candidate}" for n8n.`);
+    }
+
+    return { tag: candidate, source: 'env' };
+}
+
 async function resolveStableTag() {
-    const overrideTag = normalizeRef(process.env.N8N_VERSION || process.env.N8N_STABLE_TAG);
-    if (overrideTag) {
-        return { tag: overrideTag, source: 'env' };
+    const override = await resolveSourceTag();
+    if (override) {
+        return override;
     }
 
     try {

@@ -169,7 +169,10 @@ export class BaseCommand {
     }
 
     private tryResolveEnvironment(environmentNameOrId?: string): IResolvedWorkspaceEnvironment | undefined {
-        if (!this.configService.isWorkspaceConfigV4()) {
+        // Not `isWorkspaceConfigV4()`: a workspace `.env` resolves an environment with no
+        // config file on disk, and gating on the file alone left `list`/`pull`/`push`
+        // reporting an unconfigured CLI for a workspace that was in fact usable.
+        if (!this.configService.hasResolvableEnvironment()) {
             return undefined;
         }
         try {
@@ -199,6 +202,93 @@ export class BaseCommand {
         }
         this.instanceIdentifier = await this.configService.getOrCreateInstanceIdentifier(this.config.host, this.activeInstanceId);
         return this.instanceIdentifier;
+    }
+
+    /**
+     * Resolve optional session auth for reading n8n folders over the internal
+     * `/rest` API. folderSync needs it wherever the public workflow API omits a
+     * workflow's folder ownership — which is every edition today — so `pull` can
+     * rebuild the nested layout. Entirely opt-in: with nothing configured this
+     * returns undefined and the public (flat) path is used, unchanged.
+     *
+     * Candidate cookies are tried in order — the stored per-target token (from
+     * `n8nac env auth folder-login`) first, then an env token — and `user`/`pass`
+     * mint a fresh cookie when none works. Env vars are never committed:
+     *   N8NAC_ENV_<ENV>_FOLDER_USER / _FOLDER_PASS   (per-environment creds)
+     *   N8NAC_ENV_<ENV>_FOLDER_TOKEN                 (per-environment cookie/jwt)
+     *   N8NAC_FOLDER_LOGIN_USER / _PASS / _TOKEN     (generic fallback)
+     */
+    protected resolveFolderAuth(): { cookies?: string[]; user?: string; pass?: string } | undefined {
+        const clean = (v?: string) => v?.trim().replace(/^['"]|['"]$/g, '') || '';
+        const slugify = (v?: string) =>
+            (v || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const slugs = [
+            this.activeEnvironment?.environmentName,
+            this.activeEnvironment?.environmentId,
+        ].map(slugify).filter(Boolean);
+
+        let user = '';
+        let pass = '';
+        let envToken = '';
+        for (const slug of slugs) {
+            const scopedUser = clean(process.env[`N8NAC_ENV_${slug}_FOLDER_USER`]);
+            const scopedPass = clean(process.env[`N8NAC_ENV_${slug}_FOLDER_PASS`]);
+            if (!user && !pass && scopedUser && scopedPass) {
+                user = scopedUser;
+                pass = scopedPass;
+            }
+            envToken = envToken || clean(process.env[`N8NAC_ENV_${slug}_FOLDER_TOKEN`]);
+        }
+        const genericUser = clean(process.env.N8NAC_FOLDER_LOGIN_USER);
+        const genericPass = clean(process.env.N8NAC_FOLDER_LOGIN_PASS);
+        if (!user && !pass && genericUser && genericPass) {
+            user = genericUser;
+            pass = genericPass;
+        }
+        envToken = envToken || clean(process.env.N8NAC_FOLDER_LOGIN_TOKEN);
+
+        // Accept a bare JWT by adding the cookie name.
+        const asCookie = (v: string) => (v && !v.includes('=') ? `n8n-auth=${v}` : v);
+
+        const cookies: string[] = [];
+        // Stored per-target token first (skips a login round-trip), if unexpired.
+        const targetId = this.activeEnvironment?.environmentTargetId;
+        if (targetId) {
+            const session = this.configService.getFolderSession(targetId);
+            if (session?.cookie && (!session.expiresAt || Date.parse(session.expiresAt) > Date.now())) {
+                cookies.push(asCookie(session.cookie));
+            }
+        }
+        // Env token as a fallback candidate — used if the stored cookie is revoked.
+        if (envToken) cookies.push(asCookie(envToken));
+        const uniqueCookies = cookies.filter((c, i) => c && cookies.indexOf(c) === i);
+
+        if (uniqueCookies.length === 0 && !(user && pass)) return undefined;
+        return {
+            cookies: uniqueCookies.length ? uniqueCookies : undefined,
+            user: user || undefined,
+            pass: pass || undefined,
+        };
+    }
+
+    /**
+     * Whether a configured session folder source that fails to load may degrade to
+     * a flat pull (with a warning) instead of failing closed. Off by default; opt in
+     * with N8NAC_ENV_<ENV>_FOLDER_ALLOW_FLAT or N8NAC_FOLDER_ALLOW_FLAT_FALLBACK.
+     */
+    protected resolveFolderSessionAllowFlatFallback(): boolean {
+        const truthy = (v?: string) => /^(1|true|yes|on)$/i.test((v || '').trim());
+        const slugify = (v?: string) =>
+            (v || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const slugs = [
+            this.activeEnvironment?.environmentName,
+            this.activeEnvironment?.environmentId,
+        ].map(slugify).filter(Boolean);
+        for (const slug of slugs) {
+            const perEnv = process.env[`N8NAC_ENV_${slug}_FOLDER_ALLOW_FLAT`];
+            if (perEnv !== undefined) return truthy(perEnv);
+        }
+        return truthy(process.env.N8NAC_FOLDER_ALLOW_FLAT_FALLBACK);
     }
 
     /**
@@ -238,6 +328,9 @@ export class BaseCommand {
             projectName: localConfig.projectName,
             folderSync: localConfig.folderSync ?? false,
             folderSyncMoveToRoot: localConfig.folderSyncMoveToRoot ?? false,
+            host: this.config.host,
+            folderAuth: this.resolveFolderAuth(),
+            folderSessionAllowFlatFallback: this.resolveFolderSessionAllowFlatFallback(),
             environmentId: this.activeEnvironment?.environmentId,
             environmentName: this.activeEnvironment?.environmentName,
             environmentTargetId: this.activeEnvironment?.environmentTargetId,

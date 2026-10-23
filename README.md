@@ -6,6 +6,9 @@
 
 **VS Code / Cursor Agent · n8n Environments · n8n-manager · GitOps · AI Skills · TypeScript Workflows**
 
+<a href="https://trendshift.io/repositories/22772?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-22772" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/22772" alt="EtienneLescot%2Fn8n-as-code | Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/developers/12646?utm_source=developer-badge&amp;utm_medium=badge&amp;utm_campaign=badge-developer-12646" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/developers/12646" alt="EtienneLescot | Trendshift" width="250" height="55"/></a>
+
 [![CI](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/ci.yml/badge.svg)](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/ci.yml)
 [![Documentation](https://github.com/EtienneLescot/n8n-as-code/actions/workflows/docs.yml/badge.svg)](https://n8nascode.dev/)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/etienne-lescot.n8n-as-code?label=VS%20Code&logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code)
@@ -13,6 +16,8 @@
 [![npm: cli](https://img.shields.io/npm/v/n8nac?label=cli&logo=npm)](https://www.npmjs.com/package/n8nac)
 [![npm: skills](https://img.shields.io/npm/v/@n8n-as-code/skills?label=skills&logo=npm)](https://www.npmjs.com/package/@n8n-as-code/skills)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Beta%20%2F%20Pending%20Review-orange)](https://n8nascode.dev/docs/usage/claude-plugin/)
+[![X](https://img.shields.io/badge/X-@LescotEtienne-000000?logo=x&logoColor=white)](https://x.com/LescotEtienne)
+[![Sponsor](https://img.shields.io/github/sponsors/EtienneLescot?logo=githubsponsors&label=Sponsor)](https://github.com/sponsors/EtienneLescot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 <br>
@@ -120,6 +125,19 @@ Use `promote` to move workflow source from one environment `workflowsPath` to an
 
 [CLI guide](https://n8nascode.dev/docs/usage/cli/) · [n8n-manager guide](https://n8nascode.dev/docs/usage/n8n-manager/)
 
+### Prereleases
+
+To test upcoming features before they hit the stable release, append `@next` to any CLI/npm command or switch to the pre-release channel in your editor:
+
+- **CLI**: `npm install -g n8nac@next` or run on demand with `npx --yes n8nac@next <command>`
+- **VS Code / Cursor**: Click **"Switch to Pre-Release Version"** on the [Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) or run:
+  ```bash
+  code --install-extension etienne-lescot.n8n-as-code --pre-release
+  ```
+- **OpenClaw**: `openclaw plugins install @n8n-as-code/n8nac@next`
+
+> **Note**: When testing prereleases, keep all entry points on the `@next` tag so that the extension, CLI, and agent skills remain aligned.
+
 ## Command Groups
 
 ### Primary Usage: `n8nac env`
@@ -226,6 +244,8 @@ n8nac convert-batch workflows/ --format typescript
 | **[@n8n-as-code/n8nac](plugins/openclaw/n8n-as-code)** | OpenClaw plugin with prompt context and portable skills | `openclaw plugins install @n8n-as-code/n8nac` |
 | **[@n8n-as-code/transformer](packages/transformer)** | JSON to TypeScript workflow converter and back | `npm i @n8n-as-code/transformer` |
 
+> **Prereleases**: Append `@next` to test any package or plugin before release (e.g. `npx n8nac@next`, `npm i @n8n-as-code/transformer@next`).
+
 ## How The Pieces Fit
 
 - **VS Code/Cursor extension**: visual workflow workspace and integrated Agent Workbench.
@@ -234,9 +254,9 @@ n8nac convert-batch workflows/ --format typescript
 - **`n8n-manager`**: local managed instances, Docker lifecycle, tunnels, and machine-local secrets.
 - **Skills and MCP**: grounded n8n knowledge for agents.
 
-## Star History
+## Sponsor
 
-[![Star History Chart](https://api.star-history.com/svg?repos=EtienneLescot/n8n-as-code&type=date&legend=top-left)](https://www.star-history.com/#EtienneLescot/n8n-as-code&type=date&legend=top-left)
+If `n8n-as-code` saves you time, you can support its development through [GitHub Sponsors](https://github.com/sponsors/EtienneLescot).
 
 ## Contributing
 
