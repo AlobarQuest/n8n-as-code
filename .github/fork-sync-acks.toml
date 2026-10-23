@@ -851,3 +851,36 @@ by = "devon (approved in session; recorded by Claude)"
 date = "2026-10-22"
 severity = "medium"
 reason = "n8n-as-code v2.6.0 ai (low) packages/cli/src/index.ts: env auth folder-login posts a password to <host>/rest/login and stores the session cookie; the same opt-in login accepted for rest-folder-source.ts. Every v2.6.0 model finding is accepted up to medium, the highest any run rated them (Devon, in session)."
+
+[[ack]]
+fingerprint = "3f932a7caadca2de"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-23"
+reason = "n8n-as-code v2.7.0 watched-path .claude-plugin/marketplace.json: Version bump 2.4.0 -> 2.4.1 only. Read in session."
+
+[[ack]]
+fingerprint = "d0665db92d954109"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-23"
+reason = "n8n-as-code v2.7.0 watched-path plugins/claude/n8n-as-code/.claude-plugin/plugin.json: Version bump 2.4.0 -> 2.4.1 only; the unpinned MCP server is unchanged and stays with the hardening session. Read in session."
+
+[[ack]]
+fingerprint = "3757ecc29f5b6421"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-23"
+severity = "medium"
+reason = "n8n-as-code v2.7.0 ai (low) packages/cli/src/utils/version-check.ts: update-ai checks registry.npmjs.org for n8nac's dist-tags; no data leaves the machine and CI, DO_NOT_TRACK or NO_UPDATE_NOTIFIER skip it. Accepted up to medium (Devon, in session)."
+
+[[ack]]
+fingerprint = "1c1ae9a1b914a154"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-23"
+severity = "medium"
+reason = "n8n-as-code v2.7.0 ai (low) packages/skills/src/services/cli-command-resolver.ts: generated AGENTS.md can point agents at a workspace node_modules/n8nac, so a cloned repository's copy would run; the same untrusted-repository class as the accepted .env redirect. Report upstream. Accepted up to medium (Devon, in session)."
+
+[[ack]]
+fingerprint = "2c618594ff3f98f5"
+by = "devon (approved in session; recorded by Claude)"
+date = "2026-10-23"
+severity = "medium"
+reason = "n8n-as-code v2.7.0 ai (low) packages/cli/src/utils/shell.ts: incomplete Windows argument quoting in suggested command text that nothing runs. Accepted up to medium (Devon, in session)."
