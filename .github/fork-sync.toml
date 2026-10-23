@@ -3,9 +3,7 @@
 # commits no lockfile, so the sync compares the CLI's version and resolves the lockfile itself.
 upstream = "EtienneLescot/n8n-as-code"
 ecosystem = "npm"
-# STEPPED for the first syncs, one upstream release at a time (v2.4.1, v2.5.0, v2.6.0, v2.7.0),
-# so each review reads one release's diff. Restore '^v(\d+\.\d+\.\d+)$' after v2.7.0 lands.
-release_tag_pattern = '^v(2\.7\.0)$'
+release_tag_pattern = '^v(\d+\.\d+\.\d+)$'
 version_manifest = "packages/cli/package.json"
 generate_lockfile = true
 # Measured at v2.7.0 in a container with the network off. `npm run build` also runs
