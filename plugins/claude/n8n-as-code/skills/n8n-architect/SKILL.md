@@ -5,23 +5,25 @@ description: Use when the user explicitly wants to create, edit, validate, sync,
 
 # n8n Architect
 
+> **On this machine the n8n-manager package is not installed** (Devon's decision, 2026-10-25). Commands written `n8n-manager-not-installed` are unavailable: skip the step and tell the user that a managed local instance or tunnel must be set up by hand.
+
 Use this skill for all n8n-as-code work: workspace readiness, environments, managed local instances, tunnels, workflow authoring, validation, sync, push, and pull.
 
-Use `npx --yes n8nac` as the primary interface. Use `npx --yes @n8n-as-code/n8n-manager` only for local managed runtime lifecycle, tunnels, and workflow presentation commands that are explicitly exposed by n8n-manager.
+Use `n8nac` as the primary interface. Use `n8n-manager-not-installed` only for local managed runtime lifecycle, tunnels, and workflow presentation commands that are explicitly exposed by n8n-manager.
 
 ## Context Root Protocol
 
 - Treat the current context root as the directory containing `n8nac-config.json`, `AGENTS.md`, `.agents/skills`, and the configured `workflowsPath`.
 - Generated context root hint: not embedded. Use the shell launch directory or the workspace path explicitly given by the user.
-- Before any n8n work, first run `npx --yes n8nac update-ai` from the context root, then read `AGENTS.md`. `update-ai` is designed to create or refresh the n8n-as-code block without destroying existing user or agent instructions.
+- Before any n8n work, first run `n8nac update-ai` from the context root, then read `AGENTS.md`. `update-ai` is designed to create or refresh the n8n-as-code block without destroying existing user or agent instructions.
 - Use the exact `n8nac command` and `n8n-manager command` listed in `AGENTS.md`. Those context-root commands override the portable examples in this skill.
-- Run every `npx --yes n8nac env ...`, `npx --yes n8nac workspace ...`, `npx --yes n8nac list`, `pull`, `push`, `validate`, `test`, and `update-ai` command from the context root unless the user explicitly gives another context root.
+- Run every `n8nac env ...`, `n8nac workspace ...`, `n8nac list`, `pull`, `push`, `validate`, `test`, and `update-ai` command from the context root unless the user explicitly gives another context root.
 - `AGENTS.md` is bootstrap context only, not a source of configuration truth.
 - Do not infer environment, project, or `workflowsPath` from `AGENTS.md`.
 - Before n8n work, resolve the effective context from the backend:
 
 ```bash
-npx --yes n8nac env status --json
+n8nac env status --json
 ```
 
 - Use the returned `workflowsPath` for workflow files. It is the configured workflow directory for the active environment.
@@ -33,7 +35,7 @@ npx --yes n8nac env status --json
 Resolve the effective environment through the backend before workflow work:
 
 ```bash
-npx --yes n8nac env status --json
+n8nac env status --json
 ```
 
 - Treat `env status --json` as the source of effective workspace readiness.
@@ -41,44 +43,44 @@ npx --yes n8nac env status --json
 - A workspace `.env` holding `N8N_HOST` (plus any of `N8N_API_KEY`, `N8N_NATIVE_MCP_URL`, `N8N_NATIVE_MCP_TOKEN`) configures the `default` environment on first use: `env status --json` then resolves with no `env add`, `env auth set`, `env use`, or `native-mcp configure`.
 - If `env status --json` fails because the workspace is not configured, use `env add`, `env auth set`, and `env use` to create or select a V4 workspace environment.
 - Managed local instances remain machine-global runtime resources.
-- Workspace environments remain workspace-scoped and are managed through `npx --yes n8nac env ...`.
+- Workspace environments remain workspace-scoped and are managed through `n8nac env ...`.
 
 ## Bootstrap Order
 
 1. `cd` to the context root.
-2. Run `npx --yes n8nac update-ai`, then read `AGENTS.md`.
-3. Run `npx --yes n8nac env status --json`. If it resolves with `accessStatus: "ready"`, the workspace is ready — skip steps 4-9. A resolution with `missing-api-key` or `invalid-api-key` means only the credential is missing: go to step 7.
-4. If the context root is not ready, inspect managed local instances with `npx --yes @n8n-as-code/n8n-manager instance list`.
+2. Run `n8nac update-ai`, then read `AGENTS.md`.
+3. Run `n8nac env status --json`. If it resolves with `accessStatus: "ready"`, the workspace is ready — skip steps 4-9. A resolution with `missing-api-key` or `invalid-api-key` means only the credential is missing: go to step 7.
+4. If the context root is not ready, inspect managed local instances with `n8n-manager-not-installed instance list`.
 5. Reuse an existing environment or managed local instance when suitable.
 6. If no suitable environment exists, stop and ask the user whether they want to connect a remote n8n URL or create/reuse a managed local n8n instance. Do not create infrastructure by default. If the user chooses a managed local instance, ask separately whether they want a public tunnel.
 7. Ask for host/API key only for an explicitly remote n8n environment.
 8. Configure the environment with:
 
 ```bash
-npx --yes n8nac env add <name> --base-url <url> --workflows-path workflows/<name>
-npx --yes n8nac env auth set <name> --api-key-stdin
-npx --yes n8nac env use <name>
+n8nac env add <name> --base-url <url> --workflows-path workflows/<name>
+n8nac env auth set <name> --api-key-stdin
+n8nac env use <name>
 ```
 
 For a managed local instance:
 
 ```bash
-npx --yes n8nac env add Local --managed-instance <id> --workflows-path workflows/local
-npx --yes n8nac env use Local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
+n8nac env use Local
 ```
 
-9. Run `npx --yes n8nac update-ai` after changing environments when the facade does not do it automatically.
+9. Run `n8nac update-ai` after changing environments when the facade does not do it automatically.
 
 ## Environments
 
-Use `npx --yes n8nac env ...` for workspace environments, remote URLs, active environment, API-key binding, projects, and workflow paths.
+Use `n8nac env ...` for workspace environments, remote URLs, active environment, API-key binding, projects, and workflow paths.
 
 ```bash
-npx --yes n8nac env status --json
-npx --yes n8nac env list
-npx --yes n8nac env add <name> --base-url <url> --workflows-path workflows/<name>
-npx --yes n8nac env auth set <name> --api-key-stdin
-npx --yes n8nac env use <name>
+n8nac env status --json
+n8nac env list
+n8nac env add <name> --base-url <url> --workflows-path workflows/<name>
+n8nac env auth set <name> --api-key-stdin
+n8nac env use <name>
 ```
 
 - Prefer `--api-key-stdin` for API keys.
@@ -87,28 +89,28 @@ npx --yes n8nac env use <name>
 - `env auth set` binds the key to one environment, so several environments may share a base URL with one key each. Run it once per environment; `apiKeySource` in `env status --json` is `workspace-environment` when the environment uses its own key.
 - Do not ask for host/API key when the user wants a managed local Docker instance.
 - Do not print API keys or credential secret values back to the user.
-- If a command or flag is unfamiliar, run `npx --yes n8nac env --help` or `npx --yes n8nac env <subcommand> --help`.
+- If a command or flag is unfamiliar, run `n8nac env --help` or `n8nac env <subcommand> --help`.
 
-Attach a managed local instance to the workspace with `npx --yes n8nac env ...`:
+Attach a managed local instance to the workspace with `n8nac env ...`:
 
 ```bash
-npx --yes n8nac env add Local --managed-instance <id> --workflows-path workflows/local
-npx --yes n8nac env use Local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
+n8nac env use Local
 ```
 
 ## Managed Local Runtime
 
-Use `npx --yes @n8n-as-code/n8n-manager` only for local managed instance lifecycle, tunnels, and workflow presentation commands that are part of the local runtime layer.
+Use `n8n-manager-not-installed` only for local managed instance lifecycle, tunnels, and workflow presentation commands that are part of the local runtime layer.
 
 Inspect existing managed instances before changing local machine state:
 
 ```bash
-npx --yes @n8n-as-code/n8n-manager instance list
-npx --yes @n8n-as-code/n8n-manager instance --help
-npx --yes @n8n-as-code/n8n-manager config get
+n8n-manager-not-installed instance list
+n8n-manager-not-installed instance --help
+n8n-manager-not-installed config get
 ```
 
-Do not invent n8n-manager subcommands. Use `npx --yes @n8n-as-code/n8n-manager <subcommand> --help` when unsure.
+Do not invent n8n-manager subcommands. Use `n8n-manager-not-installed <subcommand> --help` when unsure.
 
 When the context root is not configured and no suitable existing instance is available, stop and ask the user to choose. Do not create infrastructure by default.
 
@@ -116,7 +118,7 @@ Present these choices clearly:
 
 - use an existing managed local instance if one is available;
 - create a new managed local n8n instance;
-- configure a remote n8n URL as a workspace environment through `npx --yes n8nac env`.
+- configure a remote n8n URL as a workspace environment through `n8nac env`.
 
 If the user chooses a managed local Docker instance, ask the tunnel question separately:
 
@@ -130,27 +132,27 @@ Only run these commands after the user has explicitly chosen the corresponding o
 Managed local instance without public tunnel:
 
 ```bash
-npx --yes @n8n-as-code/n8n-manager instance create
-npx --yes @n8n-as-code/n8n-manager instance start <id>
-npx --yes @n8n-as-code/n8n-manager instance list
+n8n-manager-not-installed instance create
+n8n-manager-not-installed instance start <id>
+n8n-manager-not-installed instance list
 ```
 
 Managed local instance with public tunnel:
 
 ```bash
-npx --yes @n8n-as-code/n8n-manager instance create
-npx --yes @n8n-as-code/n8n-manager instance start <id>
-npx --yes @n8n-as-code/n8n-manager tunnel start <id>
+n8n-manager-not-installed instance create
+n8n-manager-not-installed instance start <id>
+n8n-manager-not-installed tunnel start <id>
 ```
 
 Instance and tunnel operations are per managed local instance:
 
 ```bash
-npx --yes @n8n-as-code/n8n-manager instance start <id>
-npx --yes @n8n-as-code/n8n-manager instance stop <id>
-npx --yes @n8n-as-code/n8n-manager instance remove <id>
-npx --yes @n8n-as-code/n8n-manager tunnel start <id>
-npx --yes @n8n-as-code/n8n-manager tunnel stop <id>
+n8n-manager-not-installed instance start <id>
+n8n-manager-not-installed instance stop <id>
+n8n-manager-not-installed instance remove <id>
+n8n-manager-not-installed tunnel start <id>
+n8n-manager-not-installed tunnel stop <id>
 ```
 
 - Do not delete local instance data unless the user explicitly asks for destructive deletion.
@@ -164,14 +166,14 @@ npx --yes @n8n-as-code/n8n-manager tunnel stop <id>
 - Use `list` to inspect workflow IDs, file paths, and sync status.
 
 ```bash
-npx --yes n8nac list
-npx --yes n8nac pull <workflowId>
-npx --yes n8nac push <path-to-workflow.workflow.ts> --verify
+n8nac list
+n8nac pull <workflowId>
+n8nac push <path-to-workflow.workflow.ts> --verify
 ```
 
 - `push` requires the full workflow file path, either absolute or context-root-relative. Do not pass a bare filename.
 - On n8n 2.x, pushing to a **published** workflow also releases it to production — the API re-publishes on update. Treat every push to a published workflow as a deploy. Use `push --draft` when the user wants to check the change in n8n first: it re-pins the previously published version so production keeps running what it already ran.
-- For a new workflow, create the file inside the `workflowsPath` returned by `env status --json`, then confirm it with `npx --yes n8nac list --local`.
+- For a new workflow, create the file inside the `workflowsPath` returned by `env status --json`, then confirm it with `n8nac list --local`.
 - If push/pull reports a conflict, use explicit resolution commands. Do not overwrite remote changes blindly.
 - `pull` and conflict resolution operate on a single workflow ID.
 - `list` is the lightweight command that covers all workflows at once.
@@ -182,8 +184,8 @@ npx --yes n8nac push <path-to-workflow.workflow.ts> --verify
 If push or pull reports a conflict, stop and inspect the conflict. Use explicit resolution commands only after choosing the intended direction:
 
 ```bash
-npx --yes n8nac resolve <workflowId> --mode keep-current
-npx --yes n8nac resolve <workflowId> --mode keep-incoming
+n8nac resolve <workflowId> --mode keep-current
+n8nac resolve <workflowId> --mode keep-incoming
 ```
 
 - `keep-current` force-pushes the local version.
@@ -195,13 +197,13 @@ npx --yes n8nac resolve <workflowId> --mode keep-incoming
 Never guess n8n node parameters.
 
 ```bash
-npx --yes n8nac skills examples search "<workflow pattern>"
-npx --yes n8nac skills search "<node or capability>"
-npx --yes n8nac skills node-info <nodeName>
-npx --yes n8nac skills validate <workflow.workflow.ts>
+n8nac skills examples search "<workflow pattern>"
+n8nac skills search "<node or capability>"
+n8nac skills node-info <nodeName>
+n8nac skills validate <workflow.workflow.ts>
 ```
 
-- Batch node queries: query multiple nodes in a single command using `npx --yes n8nac skills node-info <node1> <node2> ... --compact` to inspect essential properties, required parameters, and valid options in one fast, token-efficient turn.
+- Batch node queries: query multiple nodes in a single command using `n8nac skills node-info <node1> <node2> ... --compact` to inspect essential properties, required parameters, and valid options in one fast, token-efficient turn.
 - Use exact node `type` and valid `typeVersion` values from `node-info`.
 - Use exact resource, operation, option, and parameter names from schema output.
 - Parameters of type `resourceLocator` must be structured as `{ __rl: true, value: '...', mode: 'list' | 'id' | 'url' }`.
@@ -212,32 +214,32 @@ npx --yes n8nac skills validate <workflow.workflow.ts>
 
 ## Optional Native n8n MCP Assist
 
-The `n8n-as-code` MCP server is a client adapter for N8NAC tools. The native n8n MCP server is a separate live n8n instance endpoint. Native n8n MCP can complement this workflow for native knowledge, live state, and runtime execution, but it does not replace `npx --yes n8nac`, bundled knowledge, `.workflow.ts`, Git, or the sync discipline.
+The `n8n-as-code` MCP server is a client adapter for N8NAC tools. The native n8n MCP server is a separate live n8n instance endpoint. Native n8n MCP can complement this workflow for native knowledge, live state, and runtime execution, but it does not replace `n8nac`, bundled knowledge, `.workflow.ts`, Git, or the sync discipline.
 
 Use this routing policy:
 
-- Default to local `npx --yes n8nac` for code-first workflow authoring, validation, pull, push, credentials, execution history, and presentation. Use `npx --yes n8nac skills` as the bundled offline knowledge default.
-- Native MCP assist is configured per n8n-as-code environment. When creating or updating an environment, offer to configure it with `npx --yes n8nac native-mcp configure <environment> --token-stdin`; do not ask the user to manually configure a separate MCP server for Claude Code or the VS Code Workbench.
+- Default to local `n8nac` for code-first workflow authoring, validation, pull, push, credentials, execution history, and presentation. Use `n8nac skills` as the bundled offline knowledge default.
+- Native MCP assist is configured per n8n-as-code environment. When creating or updating an environment, offer to configure it with `n8nac native-mcp configure <environment> --token-stdin`; do not ask the user to manually configure a separate MCP server for Claude Code or the VS Code Workbench.
 - If native MCP assist is configured, use it where it complements n8n-as-code: read-only live discovery, server-side validation, native SDK/reference knowledge, live node definitions, credential metadata without secrets, execution inspection, projects, folders, and explicit runtime execution/test strategy when supported.
-- Check native availability with `npx --yes n8nac native-mcp status --include-tools --json` before relying on native tools.
-- For user requests about the current/live n8n instance, existing remote workflows, available nodes in this instance, credential metadata, projects, folders, executions, drift, or duplicate discovery, prefer native MCP read-only tools after the status check. Do not fall back to local `npx --yes n8nac list`, `fetch`, `verify`, or bundled `skills` as the primary source for those live-audit facts when native MCP read-only tools are available.
+- Check native availability with `n8nac native-mcp status --include-tools --json` before relying on native tools.
+- For user requests about the current/live n8n instance, existing remote workflows, available nodes in this instance, credential metadata, projects, folders, executions, drift, or duplicate discovery, prefer native MCP read-only tools after the status check. Do not fall back to local `n8nac list`, `fetch`, `verify`, or bundled `skills` as the primary source for those live-audit facts when native MCP read-only tools are available.
 - Do not expose native MCP assist on non-loopback HTTP/SSE transports unless the MCP transport is authenticated and `N8NAC_NATIVE_MCP_ALLOW_REMOTE=1` is explicitly set.
 - Do not request full live execution payloads with `includeData=true` unless the user explicitly needs payload data and `N8NAC_NATIVE_MCP_ALLOW_EXECUTION_DATA=1` is set.
-- Prefer `npx --yes n8nac test` when the execution strategy is to exercise the real webhook, chat, or form trigger contract.
-- Prefer native runtime execution only when the generated execution strategy explicitly calls for it and it does something better than `npx --yes n8nac test`, such as workflow ID execution, non-webhook workflow testing, native pin-data test preparation, or direct execution diagnostics.
-- Treat native execute/test as a side-effecting runtime action, like `npx --yes n8nac test`; do not run it just because the tool exists.
+- Prefer `n8nac test` when the execution strategy is to exercise the real webhook, chat, or form trigger contract.
+- Prefer native runtime execution only when the generated execution strategy explicitly calls for it and it does something better than `n8nac test`, such as workflow ID execution, non-webhook workflow testing, native pin-data test preparation, or direct execution diagnostics.
+- Treat native execute/test as a side-effecting runtime action, like `n8nac test`; do not run it just because the tool exists.
 - Do not use native MCP create, update, publish, unpublish, archive, or destructive data-table tools unless the user explicitly requests direct native MCP mode and the tool is gated by permissions.
-- If a workflow is ever created or changed through native MCP direct mode, immediately pull it back with `npx --yes n8nac pull <workflowId>` so the `.workflow.ts` file and Git remain the source of truth.
+- If a workflow is ever created or changed through native MCP direct mode, immediately pull it back with `n8nac pull <workflowId>` so the `.workflow.ts` file and Git remain the source of truth.
 - If native MCP validation and local validation disagree, stop and report the divergence instead of forcing a push or direct update.
 - Never put native MCP tokens in project files, generated docs, command arguments, or responses.
 
 Use-case routing examples:
 
-- Workflow authoring, editing, pull, push, sync, credentials, and durable workflow changes: use local `npx --yes n8nac` commands and `.workflow.ts` files.
-- Offline node knowledge, examples, documentation, and schema-first authoring: use local `npx --yes n8nac skills` commands first.
+- Workflow authoring, editing, pull, push, sync, credentials, and durable workflow changes: use local `n8nac` commands and `.workflow.ts` files.
+- Offline node knowledge, examples, documentation, and schema-first authoring: use local `n8nac skills` commands first.
 - Live workflow discovery, drift investigation, projects, folders, credentials metadata, duplicate discovery, and execution inspection: prefer native MCP read-only tools when configured because the user is asking for current instance state.
 - Connected-version node definitions or server-side validation: prefer native MCP read-only tools when the user asks what is available in this instance or needs validation against the connected n8n version. Use bundled knowledge for offline authoring when live instance state is not needed.
-- Runtime execution: prefer `npx --yes n8nac test` for real webhook, chat, or form trigger contracts; prefer native runtime execution only for explicit workflow-ID execution, non-webhook testing, native pin-data preparation, or direct execution diagnostics.
+- Runtime execution: prefer `n8nac test` for real webhook, chat, or form trigger contracts; prefer native runtime execution only for explicit workflow-ID execution, non-webhook testing, native pin-data preparation, or direct execution diagnostics.
 - Direct native workflow creation, update, publish, unpublish, archive, or destructive operations: do not use them as an automatic path; require an explicit direct-native request and sync-back plan.
 
 Do not treat the presence of any MCP server as permission to call native n8n MCP tools. Native n8n MCP is used if and only if the generated execution or investigation strategy needs live n8n capabilities that local N8NAC cannot provide as well.
@@ -254,23 +256,23 @@ first is effectively free, while each shell command pays a fresh process start.
 Otherwise, use these commands instead of guessing:
 
 ```bash
-npx --yes n8nac skills search "<node or capability>"
-npx --yes n8nac skills node-info <nodeName>
-npx --yes n8nac skills node-schema <nodeName>
-npx --yes n8nac skills docs "<topic>"
-npx --yes n8nac skills guides "<topic>"
-npx --yes n8nac skills examples search "<workflow pattern>"
-npx --yes n8nac skills examples info <id>
-npx --yes n8nac skills examples download <id>
+n8nac skills search "<node or capability>"
+n8nac skills node-info <nodeName>
+n8nac skills node-schema <nodeName>
+n8nac skills docs "<topic>"
+n8nac skills guides "<topic>"
+n8nac skills examples search "<workflow pattern>"
+n8nac skills examples info <id>
+n8nac skills examples download <id>
 ```
 
 - Prefer `--compact` on `search`, `node-info`, and `node-schema`: same schemas, bounded output (required params + snippet + gating flags).
-- Prefer one `batch --compact` over N separate lookups: one process parses the ontology once. Pass `--calls '<json>'`, `--calls-file <path>` (file avoids shell-quoting), or pipe JSON via stdin. `--compact` applies to `search`, `node-info`, `node-schema`; `examples-search` and `examples-info` always return full workflow data. Example: `npx --yes n8nac skills batch --compact --calls '[{"cmd":"search","query":"gmail"},{"cmd":"node-info","name":"gmailTool"}]'`.
-- For several nodes at once, `node-info` and `node-schema` also take multiple names directly: `npx --yes n8nac skills node-info <node1> <node2> ... --compact`.
+- Prefer one `batch --compact` over N separate lookups: one process parses the ontology once. Pass `--calls '<json>'`, `--calls-file <path>` (file avoids shell-quoting), or pipe JSON via stdin. `--compact` applies to `search`, `node-info`, `node-schema`; `examples-search` and `examples-info` always return full workflow data. Example: `n8nac skills batch --compact --calls '[{"cmd":"search","query":"gmail"},{"cmd":"node-info","name":"gmailTool"}]'`.
+- For several nodes at once, `node-info` and `node-schema` also take multiple names directly: `n8nac skills node-info <node1> <node2> ... --compact`.
 - Start with `examples search` when the user asks for a common automation pattern.
 - Fetch community examples only when you do not know how to wire something, when the workflow is unusually complex, or when the user explicitly asks. Each download costs a full roundtrip: for routine tasks, local knowledge (`search`, `node-info`, `batch`) is faster and authoritative. Skip examples otherwise.
 - Use examples to learn patterns, not as authority over current node schemas.
-- If a command or flag is unfamiliar, run `npx --yes n8nac <subcommand> --help`; do not invent flags.
+- If a command or flag is unfamiliar, run `n8nac <subcommand> --help`; do not invent flags.
 
 ## Workflow Authoring Rules
 
@@ -412,16 +414,16 @@ defineRouting() {
 Prefer `push --verify`: it fetches the pushed workflow and validates it in the same process. A standalone `verify` right after `push --verify` re-checks the same state — skip it unless you pushed without `--verify`.
 
 ```bash
-npx --yes n8nac push <path> --verify
-npx --yes n8nac test-plan <workflowId> --json
+n8nac push <path> --verify
+n8nac test-plan <workflowId> --json
 ```
 
 
 For webhook, chat, or form workflows, prefer the production test sequence:
 
 ```bash
-npx --yes n8nac workflow activate <workflowId>
-npx --yes n8nac test <workflowId> --prod
+n8nac workflow activate <workflowId>
+n8nac test <workflowId> --prod
 ```
 
 - Class A configuration gaps require user/config action, not workflow rewrites.
@@ -431,7 +433,7 @@ npx --yes n8nac test <workflowId> --prod
 
 ## Workflow Presentation Contract
 
-`npx --yes n8nac workflow present` is the standard way to show a workflow to the user. It is v4-environment aware and part of the workflow authoring loop.
+`n8nac workflow present` is the standard way to show a workflow to the user. It is v4-environment aware and part of the workflow authoring loop.
 
 Run it whenever one of these is true:
 
@@ -441,7 +443,7 @@ Run it whenever one of these is true:
 - the user asks to show, open, present, display, or give the URL/link for a workflow.
 
 ```bash
-npx --yes n8nac workflow present <workflowId> --json
+n8nac workflow present <workflowId> --json
 ```
 
 Rules:
@@ -449,8 +451,8 @@ Rules:
 - Do not manually construct n8n workflow URLs.
 - Do not return an internal local n8n URL when a presentation URL is available.
 - Use the `url` returned by `workflow present --json` as the user-facing URL.
-- If you do not know the workflow ID, run `npx --yes n8nac list` first and select the matching workflow.
-- Do not call `npx --yes @n8n-as-code/n8n-manager presentWorkflowResult`; it is a legacy runtime command and is not workspace-environment aware.
+- If you do not know the workflow ID, run `n8nac list` first and select the matching workflow.
+- Do not call `n8n-manager-not-installed presentWorkflowResult`; it is a legacy runtime command and is not workspace-environment aware.
 - If `workflow present` fails, report the backend diagnostic and then provide the best direct n8n URL only as a fallback.
 - Do this before the final response when the task created, changed, pushed, ran, or explicitly asks to show a workflow.
 
@@ -464,18 +466,18 @@ For webhook, chat, or form workflows:
 4. Test with `--prod` by default.
 
 ```bash
-npx --yes n8nac push <path-to-workflow.workflow.ts> --verify
-npx --yes n8nac test-plan <workflowId> --json
-npx --yes n8nac workflow activate <workflowId>
-npx --yes n8nac test <workflowId> --prod
+n8nac push <path-to-workflow.workflow.ts> --verify
+n8nac test-plan <workflowId> --json
+n8nac workflow activate <workflowId>
+n8nac test <workflowId> --prod
 ```
 
-Use bare `npx --yes n8nac test <workflowId>` only when a test URL was intentionally armed in the n8n editor.
+Use bare `n8nac test <workflowId>` only when a test URL was intentionally armed in the n8n editor.
 
 For GET/HEAD webhooks that read from `$json.query`, prefer:
 
 ```bash
-npx --yes n8nac test <workflowId> --query '{"key":"value"}' --prod
+n8nac test <workflowId> --query '{"key":"value"}' --prod
 ```
 
 ## Execution Debugging
@@ -483,8 +485,8 @@ npx --yes n8nac test <workflowId> --query '{"key":"value"}' --prod
 If a webhook returns success but the workflow behavior is wrong, inspect executions instead of guessing:
 
 ```bash
-npx --yes n8nac execution list --workflow-id <workflowId> --limit 5 --json
-npx --yes n8nac execution get <executionId> --include-data --json
+n8nac execution list --workflow-id <workflowId> --limit 5 --json
+n8nac execution get <executionId> --include-data --json
 ```
 
 - A successful HTTP trigger only means n8n accepted the request.
@@ -496,11 +498,11 @@ npx --yes n8nac execution get <executionId> --include-data --json
 When a workflow is blocked by missing credentials, resolve the credential gap without rewriting unrelated workflow logic.
 
 ```bash
-npx --yes n8nac workflow credential-required <workflowId> --json
-npx --yes n8nac credential schema <type>
-npx --yes n8nac credential list --json
-npx --yes n8nac credential create --type <type> --name <name> --file cred.json --json
-npx --yes n8nac workflow activate <workflowId>
+n8nac workflow credential-required <workflowId> --json
+n8nac credential schema <type>
+n8nac credential list --json
+n8nac credential create --type <type> --name <name> --file cred.json --json
+n8nac workflow activate <workflowId>
 ```
 
 - `workflow credential-required` exits non-zero when at least one credential is missing. Treat that as a signal to act, not as a workflow-code failure.
@@ -524,12 +526,12 @@ For most workflow tasks:
 8. Push with `--verify`.
 9. Test if the workflow is HTTP-triggered.
 10. Inspect executions when behavior is unclear.
-11. Present the final workflow link with `npx --yes n8nac workflow present <workflowId> --json`.
+11. Present the final workflow link with `n8nac workflow present <workflowId> --json`.
 
 ## Response Discipline
 
 - Explain concrete actions and command results, not generic capability.
-- When the user asks for an URL or visual inspection of a workflow, run `npx --yes n8nac workflow present <workflowId> --json` instead of composing a URL manually.
+- When the user asks for an URL or visual inspection of a workflow, run `n8nac workflow present <workflowId> --json` instead of composing a URL manually.
 - If setup is missing, use `n8nac env ...` for workspace environments and `n8n-manager` only for managed local instances.
 - Do not ask for host/API key unless the user chooses a remote n8n environment.
 - Do not tell the user to run setup commands when you can run non-interactive commands yourself.

@@ -60,8 +60,8 @@ n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 Manual prerelease commands should use matching npm tags:
 
 ```bash
-npx --yes n8nac@next env list
-npx --yes @n8n-as-code/n8n-manager@next instance list
+n8nac env list
+n8n-manager-not-installed instance list
 ```
 
 ## MCP

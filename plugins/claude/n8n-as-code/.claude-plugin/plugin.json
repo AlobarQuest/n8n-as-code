@@ -11,10 +11,9 @@
   "repository": "https://github.com/EtienneLescot/n8n-as-code",
   "mcpServers": {
     "n8n-as-code": {
-      "command": "npx",
+      "command": "n8nac",
       "args": [
-        "-y",
-        "@n8n-as-code/mcp"
+        "mcp"
       ]
     }
   },
